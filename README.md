@@ -23,6 +23,8 @@ kitty_graphics = true
 
 Reload or restart Herdr after changing the config.
 
+Pane hints are rendered with the `figlet` CLI. Install FIGlet and ensure `figlet` is available in your `PATH` before invoking the plugin.
+
 ## Usage
 
 Invoke the plugin action directly:

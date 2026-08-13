@@ -30,6 +30,13 @@ test("createHintPngBase64 rejects invalid dimensions", () => {
   assert.throws(() => createHintPngBase64("1", 20.5, 20), /positive safe integers/);
 });
 
+test("createHintPngBase64 explains when figlet is unavailable", () => {
+  assert.throws(
+    () => createHintPngBase64("1", 81, 120, HINT_COLORS[0], "", { FIGLET_BIN: "/does/not/exist" }),
+    /figlet is required.*not found/i,
+  );
+});
+
 test("createHintPngBase64 renders letter shortcuts distinctly", () => {
   const one = createHintPngBase64("1", 80, 120);
 
@@ -100,7 +107,7 @@ test("createOverlayParams covers the target pane viewport", () => {
     });
     assert.ok(params.data_base64.length > 0);
     assert.equal(
-      getCachedHintBase64("v5:2:w1:p2:54:144:36,114,200,245", { HERDR_PLUGIN_STATE_DIR: dir }),
+      getCachedHintBase64("v6:2:w1:p2:54:144:36,114,200,245", { HERDR_PLUGIN_STATE_DIR: dir }),
       params.data_base64,
     );
   } finally {

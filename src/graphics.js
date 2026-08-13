@@ -1,81 +1,11 @@
 "use strict";
 
 const zlib = require("node:zlib");
+const { spawnSync } = require("node:child_process");
 const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const path = require("node:path");
 
-const GLYPHS = {
-  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
-  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-  "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
-  "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
-  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
-  a: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-  b: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
-  c: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
-  d: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
-  e: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
-  f: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
-  g: ["01111", "10000", "10000", "10011", "10001", "10001", "01110"],
-  h: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
-  i: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
-  j: ["00111", "00010", "00010", "00010", "00010", "10010", "01100"],
-  k: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
-  l: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
-  m: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
-  n: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
-  o: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
-  p: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
-  q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
-  r: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
-  s: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
-  t: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
-  u: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
-  v: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
-  w: ["10001", "10001", "10001", "10101", "10101", "10101", "01010"],
-  x: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
-  y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
-  z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
-  ":": ["00000", "00100", "00100", "00000", "00100", "00100", "00000"],
-  "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
-  _: ["00000", "00000", "00000", "00000", "00000", "00000", "11111"],
-  ".": ["00000", "00000", "00000", "00000", "00000", "00100", "00100"],
-  "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
-};
-
-const LOWERCASE_GLYPHS = {
-  a: ["00000", "00000", "01110", "00001", "01111", "10001", "01111"],
-  b: ["10000", "10000", "10110", "11001", "10001", "10001", "11110"],
-  c: ["00000", "00000", "01110", "10000", "10000", "10001", "01110"],
-  d: ["00001", "00001", "01101", "10011", "10001", "10001", "01111"],
-  e: ["00000", "00000", "01110", "10001", "11111", "10000", "01110"],
-  f: ["00110", "01001", "01000", "11100", "01000", "01000", "01000"],
-  g: ["00000", "01111", "10001", "10001", "01111", "00001", "01110"],
-  h: ["10000", "10000", "10110", "11001", "10001", "10001", "10001"],
-  i: ["00100", "00000", "01100", "00100", "00100", "00100", "01110"],
-  j: ["00010", "00000", "00110", "00010", "00010", "10010", "01100"],
-  k: ["10000", "10000", "10010", "10100", "11000", "10100", "10010"],
-  l: ["01100", "00100", "00100", "00100", "00100", "00100", "01110"],
-  m: ["00000", "00000", "11010", "10101", "10101", "10101", "10101"],
-  n: ["00000", "00000", "10110", "11001", "10001", "10001", "10001"],
-  o: ["00000", "00000", "01110", "10001", "10001", "10001", "01110"],
-  p: ["00000", "11110", "10001", "10001", "11110", "10000", "10000"],
-  q: ["00000", "01111", "10001", "10001", "01111", "00001", "00001"],
-  r: ["00000", "00000", "10110", "11001", "10000", "10000", "10000"],
-  s: ["00000", "00000", "01111", "10000", "01110", "00001", "11110"],
-  t: ["01000", "01000", "11100", "01000", "01000", "01001", "00110"],
-  u: ["00000", "00000", "10001", "10001", "10001", "10011", "01101"],
-  v: ["00000", "00000", "10001", "10001", "10001", "01010", "00100"],
-  w: ["00000", "00000", "10001", "10001", "10101", "10101", "01010"],
-  x: ["00000", "00000", "10001", "01010", "00100", "01010", "10001"],
-  y: ["00000", "10001", "10001", "10001", "01111", "00001", "01110"],
-  z: ["00000", "00000", "11111", "00010", "00100", "01000", "11111"],
-};
+const TERMINUS_FONT_PATH = path.join(__dirname, "..", "assets", "fonts", "terminus.flf");
 
 const HINT_COLORS = [
   [220, 88, 88, 245], // ANSI bright red
@@ -95,6 +25,7 @@ const PANE_ID_BACKGROUND = [0, 0, 0, 160];
 
 let crcTable = null;
 const memoryCache = new Map();
+const figletCache = new Map();
 
 function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
@@ -175,56 +106,87 @@ function drawRect(rgba, width, height, x, y, rectWidth, rectHeight, color) {
   }
 }
 
-function drawText(rgba, width, height, text, scale, originX, originY, color, preserveCase = false) {
-  let textX = originX;
+function renderFiglet(text, env = process.env) {
+  const figletBin = env.FIGLET_BIN || process.env.FIGLET_BIN || "figlet";
+  const cacheKey = `${figletBin}:${text}`;
+  const cached = figletCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
-  for (const character of text) {
-    const glyph =
-      (preserveCase && character === character.toLowerCase() && LOWERCASE_GLYPHS[character]) ||
-      GLYPHS[character.toLowerCase()] ||
-      GLYPHS["?"];
-    for (let row = 0; row < glyph.length; row += 1) {
-      for (let col = 0; col < glyph[row].length; col += 1) {
-        if (glyph[row][col] === "1") {
-          drawRect(rgba, width, height, textX + col * scale, originY + row * scale, scale, scale, color);
-        }
+  const result = spawnSync(figletBin, ["-f", TERMINUS_FONT_PATH, "-w", "1000", String(text)], {
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+
+  if (result.error?.code === "ENOENT") {
+    throw new Error("figlet is required to render pane hints but was not found in PATH");
+  }
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`figlet failed with exit ${result.status}: ${result.stderr.trim()}`);
+  }
+
+  let lines = result.stdout.replaceAll("\r", "").split("\n");
+  while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+  while (lines.length > 0 && lines.at(-1).trim() === "") lines.pop();
+  const firstColumn = Math.min(...lines.map((line) => line.search(/\S/)).filter((column) => column >= 0));
+  const lastColumn = Math.max(...lines.map((line) => line.search(/\s*$/)));
+  lines = lines.map((line) => line.slice(firstColumn, lastColumn));
+
+  const art = {
+    lines,
+    width: Math.max(...lines.map((line) => [...line].length)),
+    height: lines.length * 2,
+  };
+  figletCache.set(cacheKey, art);
+  return art;
+}
+
+function drawFiglet(rgba, width, height, art, scale, originX, originY, color) {
+  for (let row = 0; row < art.lines.length; row += 1) {
+    for (const [col, character] of [...art.lines[row]].entries()) {
+      if (character === "█" || character === "▀") {
+        drawRect(rgba, width, height, originX + col * scale, originY + row * scale * 2, scale, scale, color);
+      }
+      if (character === "█" || character === "▄") {
+        drawRect(rgba, width, height, originX + col * scale, originY + (row * 2 + 1) * scale, scale, scale, color);
       }
     }
-    textX += 6 * scale;
   }
 }
 
-function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], paneId = "") {
+function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], paneId = "", env = process.env) {
   if (!positiveInteger(width) || !positiveInteger(height)) {
     throw new RangeError("Hint image dimensions must be positive safe integers");
   }
 
-  const cacheKey = `v5:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}`;
+  const cacheKey = `v6:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}`;
   const cached = memoryCache.get(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const glyph = GLYPHS[shortcut] || GLYPHS["1"];
-  const glyphRows = glyph.length;
-  const glyphCols = glyph[0].length;
+  const shortcutArt = renderFiglet(shortcut, env);
   const label = String(paneId);
-  const labelUnits = Math.max(1, label.length * 6 - 1);
-  const labelScale = label ? Math.max(1, Math.floor(Math.min(width / labelUnits, height / 35))) : 0;
-  const labelHeight = glyphRows * labelScale;
+  const labelArt = label ? renderFiglet(label, env) : null;
+  const labelScale = labelArt ? Math.max(1, Math.floor(Math.min(width / labelArt.width, height / 20))) : 0;
+  const labelWidth = labelArt ? labelArt.width * labelScale : 0;
+  const labelHeight = labelArt ? labelArt.height * labelScale : 0;
   const gap = label ? Math.max(2, Math.floor(height * 0.04)) : 0;
   const shortcutAreaHeight = height - labelHeight - gap;
-  const scale = Math.max(2, Math.floor(Math.min(width / glyphCols, shortcutAreaHeight / glyphRows)));
-  const glyphWidth = glyphCols * scale;
-  const glyphHeight = glyphRows * scale;
-  const originX = Math.floor((width - glyphWidth) / 2);
-  const originY = Math.floor((shortcutAreaHeight - glyphHeight) / 2);
+  const scale = Math.max(1, Math.floor(Math.min(width / shortcutArt.width, shortcutAreaHeight / shortcutArt.height)));
+  const shortcutWidth = shortcutArt.width * scale;
+  const shortcutHeight = shortcutArt.height * scale;
+  const originX = Math.floor((width - shortcutWidth) / 2);
+  const originY = Math.floor((shortcutAreaHeight - shortcutHeight) / 2);
   const rgba = Buffer.alloc(width * height * 4);
 
-  drawText(rgba, width, height, shortcut, scale, originX, originY, color);
+  drawFiglet(rgba, width, height, shortcutArt, scale, originX, originY, color);
 
-  if (label) {
-    const labelWidth = labelUnits * labelScale;
+  if (labelArt) {
     const labelX = Math.floor((width - labelWidth) / 2);
     const labelY = shortcutAreaHeight + gap;
     const padding = Math.max(1, labelScale);
@@ -238,7 +200,7 @@ function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], pa
       labelHeight + padding * 2,
       PANE_ID_BACKGROUND,
     );
-    drawText(rgba, width, height, label, labelScale, labelX, labelY, color, true);
+    drawFiglet(rgba, width, height, labelArt, labelScale, labelX, labelY, color);
   }
 
   const base64 = encodePngRgba(width, height, rgba).toString("base64");
@@ -333,10 +295,10 @@ function createOverlayParams(target, graphicsInfo, index, options = {}) {
   const imageWidth = gridCols * cellWidth;
   const imageHeight = gridRows * cellHeight;
   const color = colorForIndex(index);
-  const cacheKey = `v5:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}`;
+  const cacheKey = `v6:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}`;
   let dataBase64 = getCachedHintBase64(cacheKey, env);
   if (!dataBase64) {
-    dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color, target.paneId);
+    dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color, target.paneId, env);
     setCachedHintBase64(cacheKey, dataBase64, env);
   }
 
