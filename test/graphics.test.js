@@ -7,13 +7,22 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   HINT_COLORS,
+  backgroundForEnv,
   colorForIndex,
   createHintPngBase64,
   createOverlayParams,
   getCachedCellSize,
   getCachedHintBase64,
+  paneIdBackgroundForEnv,
   setCachedCellSize,
 } = require("../src/graphics");
+
+test("backgroundForEnv supports explicit light and dark appearances", () => {
+  assert.deepEqual(backgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "light" }), [251, 241, 199, 255]);
+  assert.deepEqual(backgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "dark" }), [29, 32, 33, 255]);
+  assert.deepEqual(paneIdBackgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "light" }), [255, 255, 255, 160]);
+  assert.deepEqual(paneIdBackgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "dark" }), [0, 0, 0, 160]);
+});
 
 function rgbDistance(left, right) {
   return Math.hypot(left[0] - right[0], left[1] - right[1], left[2] - right[2]);
@@ -91,7 +100,7 @@ test("createOverlayParams covers the target pane viewport", () => {
     },
     { cell_width_px: 9, cell_height_px: 18 },
     1,
-    { env: { HERDR_PLUGIN_STATE_DIR: dir } },
+    { env: { HERDR_PLUGIN_STATE_DIR: dir, HERDR_EASYMOTION_APPEARANCE: "dark" } },
   );
 
   try {
@@ -107,7 +116,10 @@ test("createOverlayParams covers the target pane viewport", () => {
     });
     assert.ok(params.data_base64.length > 0);
     assert.equal(
-      getCachedHintBase64("v6:2:w1:p2:54:144:36,114,200,245", { HERDR_PLUGIN_STATE_DIR: dir }),
+      getCachedHintBase64("v8:2:w1:p2:54:144:36,114,200,245:29,32,33,255", {
+        HERDR_PLUGIN_STATE_DIR: dir,
+        HERDR_EASYMOTION_APPEARANCE: "dark",
+      }),
       params.data_base64,
     );
   } finally {
