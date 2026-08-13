@@ -38,6 +38,13 @@ test("createHintPngBase64 renders letter shortcuts distinctly", () => {
   }
 });
 
+test("createHintPngBase64 renders pane ids distinctly", () => {
+  const firstPane = createHintPngBase64("1", 120, 180, HINT_COLORS[0], "w1:p1");
+  const secondPane = createHintPngBase64("1", 120, 180, HINT_COLORS[0], "w1:p2");
+
+  assert.notEqual(firstPane, secondPane);
+});
+
 test("hint colors use high-contrast ANSI neighbors", () => {
   assert.deepEqual(HINT_COLORS.map((color) => color.slice(0, 3)), [
     [220, 88, 88],
@@ -85,7 +92,10 @@ test("createOverlayParams covers the target pane viewport", () => {
       grid_rows: 8,
     });
     assert.ok(params.data_base64.length > 0);
-    assert.equal(getCachedHintBase64("v2:2:54:144:36,114,200,245", { HERDR_PLUGIN_STATE_DIR: dir }), params.data_base64);
+    assert.equal(
+      getCachedHintBase64("v3:2:w1:p2:54:144:36,114,200,245", { HERDR_PLUGIN_STATE_DIR: dir }),
+      params.data_base64,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
