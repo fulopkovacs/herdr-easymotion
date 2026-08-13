@@ -45,6 +45,13 @@ test("createHintPngBase64 renders pane ids distinctly", () => {
   assert.notEqual(firstPane, secondPane);
 });
 
+test("createHintPngBase64 preserves pane id letter casing", () => {
+  const lowercase = createHintPngBase64("1", 120, 180, HINT_COLORS[0], "w3:pz");
+  const uppercase = createHintPngBase64("1", 120, 180, HINT_COLORS[0], "w3:PZ");
+
+  assert.notEqual(lowercase, uppercase);
+});
+
 test("hint colors use high-contrast ANSI neighbors", () => {
   assert.deepEqual(HINT_COLORS.map((color) => color.slice(0, 3)), [
     [220, 88, 88],
@@ -93,7 +100,7 @@ test("createOverlayParams covers the target pane viewport", () => {
     });
     assert.ok(params.data_base64.length > 0);
     assert.equal(
-      getCachedHintBase64("v3:2:w1:p2:54:144:36,114,200,245", { HERDR_PLUGIN_STATE_DIR: dir }),
+      getCachedHintBase64("v5:2:w1:p2:54:144:36,114,200,245", { HERDR_PLUGIN_STATE_DIR: dir }),
       params.data_base64,
     );
   } finally {
