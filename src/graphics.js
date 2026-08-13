@@ -48,6 +48,35 @@ const GLYPHS = {
   "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
 };
 
+const LOWERCASE_GLYPHS = {
+  a: ["00000", "00000", "01110", "00001", "01111", "10001", "01111"],
+  b: ["10000", "10000", "10110", "11001", "10001", "10001", "11110"],
+  c: ["00000", "00000", "01110", "10000", "10000", "10001", "01110"],
+  d: ["00001", "00001", "01101", "10011", "10001", "10001", "01111"],
+  e: ["00000", "00000", "01110", "10001", "11111", "10000", "01110"],
+  f: ["00110", "01001", "01000", "11100", "01000", "01000", "01000"],
+  g: ["00000", "01111", "10001", "10001", "01111", "00001", "01110"],
+  h: ["10000", "10000", "10110", "11001", "10001", "10001", "10001"],
+  i: ["00100", "00000", "01100", "00100", "00100", "00100", "01110"],
+  j: ["00010", "00000", "00110", "00010", "00010", "10010", "01100"],
+  k: ["10000", "10000", "10010", "10100", "11000", "10100", "10010"],
+  l: ["01100", "00100", "00100", "00100", "00100", "00100", "01110"],
+  m: ["00000", "00000", "11010", "10101", "10101", "10101", "10101"],
+  n: ["00000", "00000", "10110", "11001", "10001", "10001", "10001"],
+  o: ["00000", "00000", "01110", "10001", "10001", "10001", "01110"],
+  p: ["00000", "11110", "10001", "10001", "11110", "10000", "10000"],
+  q: ["00000", "01111", "10001", "10001", "01111", "00001", "00001"],
+  r: ["00000", "00000", "10110", "11001", "10000", "10000", "10000"],
+  s: ["00000", "00000", "01111", "10000", "01110", "00001", "11110"],
+  t: ["01000", "01000", "11100", "01000", "01000", "01001", "00110"],
+  u: ["00000", "00000", "10001", "10001", "10001", "10011", "01101"],
+  v: ["00000", "00000", "10001", "10001", "10001", "01010", "00100"],
+  w: ["00000", "00000", "10001", "10001", "10101", "10101", "01010"],
+  x: ["00000", "00000", "10001", "01010", "00100", "01010", "10001"],
+  y: ["00000", "10001", "10001", "10001", "01111", "00001", "01110"],
+  z: ["00000", "00000", "11111", "00010", "00100", "01000", "11111"],
+};
+
 const HINT_COLORS = [
   [220, 88, 88, 245], // ANSI bright red
   [36, 114, 200, 245], // ANSI blue
@@ -62,6 +91,7 @@ const HINT_COLORS = [
   [188, 63, 188, 245], // ANSI magenta
   [55, 190, 120, 245], // ANSI bright green
 ];
+const PANE_ID_BACKGROUND = [0, 0, 0, 160];
 
 let crcTable = null;
 const memoryCache = new Map();
@@ -145,11 +175,14 @@ function drawRect(rgba, width, height, x, y, rectWidth, rectHeight, color) {
   }
 }
 
-function drawText(rgba, width, height, text, scale, originX, originY, color) {
+function drawText(rgba, width, height, text, scale, originX, originY, color, preserveCase = false) {
   let textX = originX;
 
   for (const character of text) {
-    const glyph = GLYPHS[character.toLowerCase()] || GLYPHS["?"];
+    const glyph =
+      (preserveCase && character === character.toLowerCase() && LOWERCASE_GLYPHS[character]) ||
+      GLYPHS[character.toLowerCase()] ||
+      GLYPHS["?"];
     for (let row = 0; row < glyph.length; row += 1) {
       for (let col = 0; col < glyph[row].length; col += 1) {
         if (glyph[row][col] === "1") {
@@ -166,7 +199,7 @@ function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], pa
     throw new RangeError("Hint image dimensions must be positive safe integers");
   }
 
-  const cacheKey = `v3:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}`;
+  const cacheKey = `v5:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}`;
   const cached = memoryCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -194,7 +227,18 @@ function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], pa
     const labelWidth = labelUnits * labelScale;
     const labelX = Math.floor((width - labelWidth) / 2);
     const labelY = shortcutAreaHeight + gap;
-    drawText(rgba, width, height, label, labelScale, labelX, labelY, color);
+    const padding = Math.max(1, labelScale);
+    drawRect(
+      rgba,
+      width,
+      height,
+      labelX - padding,
+      labelY - padding,
+      labelWidth + padding * 2,
+      labelHeight + padding * 2,
+      PANE_ID_BACKGROUND,
+    );
+    drawText(rgba, width, height, label, labelScale, labelX, labelY, color, true);
   }
 
   const base64 = encodePngRgba(width, height, rgba).toString("base64");
@@ -289,7 +333,7 @@ function createOverlayParams(target, graphicsInfo, index, options = {}) {
   const imageWidth = gridCols * cellWidth;
   const imageHeight = gridRows * cellHeight;
   const color = colorForIndex(index);
-  const cacheKey = `v3:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}`;
+  const cacheKey = `v5:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}`;
   let dataBase64 = getCachedHintBase64(cacheKey, env);
   if (!dataBase64) {
     dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color, target.paneId);
