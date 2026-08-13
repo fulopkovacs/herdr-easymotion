@@ -1,2 +1,7 @@
 Herdr EasyMotion
 Copyright 2026 Elliot Jackson
+
+The bundled terminus.flf FIGlet font is based on Terminus Font,
+Copyright (c) 2020 Dimitar Toshkov Zhekov, with Reserved Font Name
+"Terminus Font", and is distributed under the SIL Open Font License 1.1.
+Source: https://github.com/xero/figlet-fonts/blob/8c3080c0065132345d8096da7e85c58aea3ede12/terminus.flf
