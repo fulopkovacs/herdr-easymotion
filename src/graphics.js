@@ -5,6 +5,7 @@ const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const path = require("node:path");
 
 const GLYPHS = {
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
   "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
   "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
   "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
@@ -40,6 +41,11 @@ const GLYPHS = {
   x: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
   y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
   z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
+  ":": ["00000", "00100", "00100", "00000", "00100", "00100", "00000"],
+  "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
+  _: ["00000", "00000", "00000", "00000", "00000", "00000", "11111"],
+  ".": ["00000", "00000", "00000", "00000", "00000", "00100", "00100"],
+  "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
 };
 
 const HINT_COLORS = [
@@ -139,12 +145,28 @@ function drawRect(rgba, width, height, x, y, rectWidth, rectHeight, color) {
   }
 }
 
-function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0]) {
+function drawText(rgba, width, height, text, scale, originX, originY, color) {
+  let textX = originX;
+
+  for (const character of text) {
+    const glyph = GLYPHS[character.toLowerCase()] || GLYPHS["?"];
+    for (let row = 0; row < glyph.length; row += 1) {
+      for (let col = 0; col < glyph[row].length; col += 1) {
+        if (glyph[row][col] === "1") {
+          drawRect(rgba, width, height, textX + col * scale, originY + row * scale, scale, scale, color);
+        }
+      }
+    }
+    textX += 6 * scale;
+  }
+}
+
+function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], paneId = "") {
   if (!positiveInteger(width) || !positiveInteger(height)) {
     throw new RangeError("Hint image dimensions must be positive safe integers");
   }
 
-  const cacheKey = `v2:${shortcut}:${width}:${height}:${color.join(",")}`;
+  const cacheKey = `v3:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}`;
   const cached = memoryCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -153,19 +175,26 @@ function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0]) {
   const glyph = GLYPHS[shortcut] || GLYPHS["1"];
   const glyphRows = glyph.length;
   const glyphCols = glyph[0].length;
-  const scale = Math.max(2, Math.floor(Math.min(width / glyphCols, height / glyphRows)));
+  const label = String(paneId);
+  const labelUnits = Math.max(1, label.length * 6 - 1);
+  const labelScale = label ? Math.max(1, Math.floor(Math.min(width / labelUnits, height / 35))) : 0;
+  const labelHeight = glyphRows * labelScale;
+  const gap = label ? Math.max(2, Math.floor(height * 0.04)) : 0;
+  const shortcutAreaHeight = height - labelHeight - gap;
+  const scale = Math.max(2, Math.floor(Math.min(width / glyphCols, shortcutAreaHeight / glyphRows)));
   const glyphWidth = glyphCols * scale;
   const glyphHeight = glyphRows * scale;
   const originX = Math.floor((width - glyphWidth) / 2);
-  const originY = Math.floor((height - glyphHeight) / 2);
+  const originY = Math.floor((shortcutAreaHeight - glyphHeight) / 2);
   const rgba = Buffer.alloc(width * height * 4);
 
-  for (let row = 0; row < glyphRows; row += 1) {
-    for (let col = 0; col < glyphCols; col += 1) {
-      if (glyph[row][col] === "1") {
-        drawRect(rgba, width, height, originX + col * scale, originY + row * scale, scale, scale, color);
-      }
-    }
+  drawText(rgba, width, height, shortcut, scale, originX, originY, color);
+
+  if (label) {
+    const labelWidth = labelUnits * labelScale;
+    const labelX = Math.floor((width - labelWidth) / 2);
+    const labelY = shortcutAreaHeight + gap;
+    drawText(rgba, width, height, label, labelScale, labelX, labelY, color);
   }
 
   const base64 = encodePngRgba(width, height, rgba).toString("base64");
@@ -260,10 +289,10 @@ function createOverlayParams(target, graphicsInfo, index, options = {}) {
   const imageWidth = gridCols * cellWidth;
   const imageHeight = gridRows * cellHeight;
   const color = colorForIndex(index);
-  const cacheKey = `v2:${target.shortcut}:${imageWidth}:${imageHeight}:${color.join(",")}`;
+  const cacheKey = `v3:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}`;
   let dataBase64 = getCachedHintBase64(cacheKey, env);
   if (!dataBase64) {
-    dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color);
+    dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color, target.paneId);
     setCachedHintBase64(cacheKey, dataBase64, env);
   }
 
