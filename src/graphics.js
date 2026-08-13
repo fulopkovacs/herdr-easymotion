@@ -21,14 +21,47 @@ const HINT_COLORS = [
   [188, 63, 188, 245], // ANSI magenta
   [55, 190, 120, 245], // ANSI bright green
 ];
-const PANE_ID_BACKGROUND = [0, 0, 0, 160];
+const DARK_PANE_ID_BACKGROUND = [0, 0, 0, 160];
+const LIGHT_PANE_ID_BACKGROUND = [255, 255, 255, 160];
+const DARK_BACKGROUND = [29, 32, 33, 255];
+const LIGHT_BACKGROUND = [251, 241, 199, 255];
 
 let crcTable = null;
+let systemBackground = null;
 const memoryCache = new Map();
 const figletCache = new Map();
 
 function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
+}
+
+function backgroundForEnv(env = process.env) {
+  const appearance = env.HERDR_EASYMOTION_APPEARANCE?.toLowerCase();
+  if (appearance === "light") {
+    return LIGHT_BACKGROUND;
+  }
+  if (appearance === "dark") {
+    return DARK_BACKGROUND;
+  }
+  if (systemBackground) {
+    return systemBackground;
+  }
+
+  if (process.platform === "darwin") {
+    const result = spawnSync("defaults", ["read", "-g", "AppleInterfaceStyle"], {
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
+    systemBackground = result.status === 0 && result.stdout.trim().toLowerCase() === "dark" ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    return systemBackground;
+  }
+
+  systemBackground = DARK_BACKGROUND;
+  return systemBackground;
+}
+
+function paneIdBackgroundForEnv(env = process.env) {
+  return backgroundForEnv(env) === LIGHT_BACKGROUND ? LIGHT_PANE_ID_BACKGROUND : DARK_PANE_ID_BACKGROUND;
 }
 
 function makeCrcTable() {
@@ -163,7 +196,8 @@ function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], pa
     throw new RangeError("Hint image dimensions must be positive safe integers");
   }
 
-  const cacheKey = `v6:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}`;
+  const background = backgroundForEnv(env);
+  const cacheKey = `v8:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}:${background.join(",")}`;
   const cached = memoryCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -184,6 +218,7 @@ function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], pa
   const originY = Math.floor((shortcutAreaHeight - shortcutHeight) / 2);
   const rgba = Buffer.alloc(width * height * 4);
 
+  drawRect(rgba, width, height, 0, 0, width, height, background);
   drawFiglet(rgba, width, height, shortcutArt, scale, originX, originY, color);
 
   if (labelArt) {
@@ -198,7 +233,7 @@ function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], pa
       labelY - padding,
       labelWidth + padding * 2,
       labelHeight + padding * 2,
-      PANE_ID_BACKGROUND,
+      paneIdBackgroundForEnv(env),
     );
     drawFiglet(rgba, width, height, labelArt, labelScale, labelX, labelY, color);
   }
@@ -295,7 +330,8 @@ function createOverlayParams(target, graphicsInfo, index, options = {}) {
   const imageWidth = gridCols * cellWidth;
   const imageHeight = gridRows * cellHeight;
   const color = colorForIndex(index);
-  const cacheKey = `v6:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}`;
+  const background = backgroundForEnv(env);
+  const cacheKey = `v8:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}:${background.join(",")}`;
   let dataBase64 = getCachedHintBase64(cacheKey, env);
   if (!dataBase64) {
     dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color, target.paneId, env);
@@ -318,6 +354,7 @@ function createOverlayParams(target, graphicsInfo, index, options = {}) {
 }
 
 module.exports = {
+  backgroundForEnv,
   HINT_COLORS,
   colorForIndex,
   createHintPngBase64,
@@ -325,5 +362,6 @@ module.exports = {
   encodePngRgba,
   getCachedCellSize,
   getCachedHintBase64,
+  paneIdBackgroundForEnv,
   setCachedCellSize,
 };
