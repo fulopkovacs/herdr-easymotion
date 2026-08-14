@@ -106,22 +106,44 @@ test("createOverlayParams covers the target pane viewport", () => {
   try {
     assert.equal(params.pane_id, "w1:p2");
     assert.equal(params.format, "png");
-    assert.equal(params.image_width, 54);
-    assert.equal(params.image_height, 144);
+    assert.equal(params.image_width, 117);
+    assert.equal(params.image_height, 216);
     assert.deepEqual(params.placement, {
-      viewport_col: 17,
-      viewport_row: 2,
-      grid_cols: 6,
-      grid_rows: 8,
+      viewport_col: 13,
+      viewport_row: 0,
+      grid_cols: 13,
+      grid_rows: 12,
     });
     assert.ok(params.data_base64.length > 0);
     assert.equal(
-      getCachedHintBase64("v8:2:w1:p2:54:144:36,114,200,245:29,32,33,255", {
+      getCachedHintBase64("v10:2:w1:p2:117:216:36,114,200,245:29,32,33,255:54:144:18", {
         HERDR_PLUGIN_STATE_DIR: dir,
         HERDR_EASYMOTION_APPEARANCE: "dark",
       }),
       params.data_base64,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("createOverlayParams keeps the hint floor while scaling the pane number", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "herdr-easymotion-graphics-"));
+  const options = { env: { HERDR_PLUGIN_STATE_DIR: dir, HERDR_EASYMOTION_APPEARANCE: "dark" } };
+  const graphicsInfo = { cell_width_px: 9, cell_height_px: 18 };
+  const target = {
+    shortcut: "5",
+    paneId: "w3:p15",
+    rect: { width: 40, height: 12, x: 0, y: 0 },
+  };
+
+  try {
+    const small = createOverlayParams(target, graphicsInfo, 4, options);
+    const smaller = createOverlayParams({ ...target, rect: { ...target.rect, height: 6 } }, graphicsInfo, 4, options);
+
+    assert.deepEqual([small.image_width, small.image_height], [117, 216]);
+    assert.deepEqual([smaller.image_width, smaller.image_height], [117, 216]);
+    assert.notEqual(smaller.data_base64, small.data_base64);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
