@@ -25,6 +25,8 @@ const DARK_PANE_ID_BACKGROUND = [0, 0, 0, 160];
 const LIGHT_PANE_ID_BACKGROUND = [255, 255, 255, 160];
 const DARK_BACKGROUND = [29, 32, 33, 255];
 const LIGHT_BACKGROUND = [251, 241, 199, 255];
+const MIN_HINT_GRID_COLS = 13;
+const MIN_HINT_GRID_ROWS = 12;
 
 let crcTable = null;
 let systemBackground = null;
@@ -191,13 +193,26 @@ function drawFiglet(rgba, width, height, art, scale, originX, originY, color) {
   }
 }
 
-function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], paneId = "", env = process.env) {
+function createHintPngBase64(
+  shortcut,
+  width,
+  height,
+  color = HINT_COLORS[0],
+  paneId = "",
+  env = process.env,
+  responsiveSize = null,
+) {
   if (!positiveInteger(width) || !positiveInteger(height)) {
     throw new RangeError("Hint image dimensions must be positive safe integers");
   }
 
   const background = backgroundForEnv(env);
-  const cacheKey = `v8:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}:${background.join(",")}`;
+  const responsiveWidth = positiveInteger(responsiveSize?.width) ? Math.min(width, responsiveSize.width) : width;
+  const responsiveHeight = positiveInteger(responsiveSize?.height) ? Math.min(height, responsiveSize.height) : height;
+  const bottomPadding = positiveInteger(responsiveSize?.bottomPadding)
+    ? Math.min(height - 1, responsiveSize.bottomPadding)
+    : 0;
+  const cacheKey = `v10:${shortcut}:${paneId}:${width}:${height}:${color.join(",")}:${background.join(",")}:${responsiveWidth}:${responsiveHeight}:${bottomPadding}`;
   const cached = memoryCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -210,8 +225,19 @@ function createHintPngBase64(shortcut, width, height, color = HINT_COLORS[0], pa
   const labelWidth = labelArt ? labelArt.width * labelScale : 0;
   const labelHeight = labelArt ? labelArt.height * labelScale : 0;
   const gap = label ? Math.max(2, Math.floor(height * 0.04)) : 0;
-  const shortcutAreaHeight = height - labelHeight - gap;
-  const scale = Math.max(1, Math.floor(Math.min(width / shortcutArt.width, shortcutAreaHeight / shortcutArt.height)));
+  const shortcutAreaHeight = height - labelHeight - gap - bottomPadding;
+  const responsiveShortcutAreaHeight = responsiveHeight - labelHeight - gap - bottomPadding;
+  const scale = Math.max(
+    labelScale || 1,
+    Math.floor(
+      Math.min(
+        width / shortcutArt.width,
+        shortcutAreaHeight / shortcutArt.height,
+        responsiveWidth / shortcutArt.width,
+        responsiveShortcutAreaHeight / shortcutArt.height,
+      ),
+    ),
+  );
   const shortcutWidth = shortcutArt.width * scale;
   const shortcutHeight = shortcutArt.height * scale;
   const originX = Math.floor((width - shortcutWidth) / 2);
@@ -323,18 +349,25 @@ function createOverlayParams(target, graphicsInfo, index, options = {}) {
   const cellHeight = positiveInteger(graphicsInfo?.cell_height_px) ? graphicsInfo.cell_height_px : 1;
   const paneCols = positiveInteger(target?.rect?.width) ? target.rect.width : 1;
   const paneRows = positiveInteger(target?.rect?.height) ? target.rect.height : 1;
-  const gridRows = Math.max(7, Math.min(28, Math.floor(paneRows * 0.68)));
-  const gridCols = Math.max(5, Math.min(20, Math.ceil(gridRows * 0.72)));
+  const responsiveGridRows = Math.max(1, Math.min(28, Math.floor(paneRows * 0.68)));
+  const responsiveGridCols = Math.max(1, Math.min(20, Math.ceil(responsiveGridRows * 0.72)));
+  const gridRows = Math.max(MIN_HINT_GRID_ROWS, responsiveGridRows);
+  const gridCols = Math.max(MIN_HINT_GRID_COLS, responsiveGridCols);
   const viewportCol = Math.max(0, Math.floor((paneCols - gridCols) / 2));
   const viewportRow = Math.max(0, Math.floor((paneRows - gridRows) / 2));
   const imageWidth = gridCols * cellWidth;
   const imageHeight = gridRows * cellHeight;
+  const responsiveSize = {
+    width: responsiveGridCols * cellWidth,
+    height: responsiveGridRows * cellHeight,
+    bottomPadding: cellHeight,
+  };
   const color = colorForIndex(index);
   const background = backgroundForEnv(env);
-  const cacheKey = `v8:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}:${background.join(",")}`;
+  const cacheKey = `v10:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}:${background.join(",")}:${responsiveSize.width}:${responsiveSize.height}:${responsiveSize.bottomPadding}`;
   let dataBase64 = getCachedHintBase64(cacheKey, env);
   if (!dataBase64) {
-    dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color, target.paneId, env);
+    dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color, target.paneId, env, responsiveSize);
     setCachedHintBase64(cacheKey, dataBase64, env);
   }
 
