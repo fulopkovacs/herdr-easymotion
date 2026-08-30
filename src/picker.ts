@@ -1,37 +1,40 @@
 #!/usr/bin/env node
-"use strict";
 
-const readline = require("node:readline");
-const { spawn } = require("node:child_process");
-const path = require("node:path");
-const {
-  buildTargets,
-  createStatus,
-  parsePluginContext,
-  resolvePaneIdFromContext,
-} = require("./core");
-const { createOverlayParams, getCachedCellSize, setCachedCellSize } = require("./graphics");
-const {
+import { spawn } from "node:child_process";
+import path from "node:path";
+import readline from "node:readline";
+
+import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
+import type { PaneLayout, PaneTarget, Status } from "./core";
+import { createOverlayParams, getCachedCellSize, setCachedCellSize } from "./graphics";
+import type { CellSize } from "./graphics";
+import {
   HerdrRequestError,
   paneGraphicsClearMany,
   paneGraphicsInfo,
   paneGraphicsSetMany,
   paneLayout,
-} = require("./herdr");
+} from "./herdr";
 
-function clearScreen() {
+interface RenderHintsOptions {
+  env?: NodeJS.ProcessEnv;
+  sourcePaneId?: string | null;
+  controlPaneId?: string | null;
+}
+
+function clearScreen(): void {
   process.stdout.write("\x1b[2J\x1b[H");
 }
 
-function hideCursor() {
+function hideCursor(): void {
   process.stdout.write("\x1b[?25l");
 }
 
-function showCursor() {
+function showCursor(): void {
   process.stdout.write("\x1b[?25h");
 }
 
-function renderStatus(status) {
+function renderStatus(status: Status): void {
   clearScreen();
   process.stdout.write(`${status.title}\n\n`);
   process.stdout.write(`${status.message}\n`);
@@ -41,7 +44,7 @@ function renderStatus(status) {
   process.stdout.write("\nPress any key to close.");
 }
 
-function graphicsDisabledStatus() {
+export function graphicsDisabledStatus(): Status {
   return {
     title: "Jump",
     message: "Pane graphics are disabled.",
@@ -49,13 +52,13 @@ function graphicsDisabledStatus() {
   };
 }
 
-function readKey() {
+function readKey(): Promise<string> {
   return new Promise((resolve) => {
-    process.stdin.once("data", (chunk) => resolve(chunk.toString("utf8")));
+    process.stdin.once("data", (chunk: Buffer | string) => resolve(chunk.toString()));
   });
 }
 
-function setupTerminal() {
+function setupTerminal(): () => void {
   if (!process.stdin.isTTY) {
     return () => {};
   }
@@ -73,13 +76,13 @@ function setupTerminal() {
   };
 }
 
-async function waitForDismiss() {
+async function waitForDismiss(): Promise<void> {
   if (process.stdin.isTTY) {
     await readKey();
   }
 }
 
-function keyToShortcut(key) {
+export function keyToShortcut(key: string): string | null {
   if (key === "\u0003" || key === "\u001b" || key.toLowerCase() === "q") {
     return null;
   }
@@ -87,32 +90,47 @@ function keyToShortcut(key) {
   return key.toLowerCase();
 }
 
-async function renderHints(targets, options = {}) {
+export async function renderHints(
+  targets: readonly PaneTarget[],
+  options: RenderHintsOptions = {},
+): Promise<string[]> {
   const env = options.env || process.env;
   const sourcePaneId = options.sourcePaneId || null;
   const controlPaneId = options.controlPaneId || env.HERDR_PANE_ID || null;
-  const graphicsInfoPaneId = (targets.find((target) => target.paneId !== sourcePaneId) || targets[0])?.paneId;
-  let sharedInfo = getCachedCellSize(env);
+  const graphicsInfoPaneId = (
+    targets.find((target) => target.paneId !== sourcePaneId) || targets[0]
+  )?.paneId;
+  let sharedInfo: Partial<CellSize> | null = getCachedCellSize(env);
   if (!sharedInfo && graphicsInfoPaneId) {
     sharedInfo = await paneGraphicsInfo(graphicsInfoPaneId, env);
     setCachedCellSize(sharedInfo, env);
   }
 
   const overlayParams = targets.map((target, index) => {
-    const graphicsPaneId = target.paneId === sourcePaneId && controlPaneId ? controlPaneId : target.paneId;
+    const graphicsPaneId =
+      target.paneId === sourcePaneId && controlPaneId ? controlPaneId : target.paneId;
     return createOverlayParams({ ...target, paneId: graphicsPaneId }, sharedInfo, index, { env });
   });
   try {
-    await paneGraphicsSetMany(overlayParams, env);
+    await paneGraphicsSetMany(
+      overlayParams.map((params) => ({ ...params })),
+      env,
+    );
   } catch (error) {
-    await clearHints(overlayParams.map((params) => params.pane_id), env);
+    await clearHints(
+      overlayParams.map((params) => params.pane_id),
+      env,
+    );
     throw error;
   }
 
   return overlayParams.map((params) => params.pane_id);
 }
 
-async function clearHints(paneIds, env = process.env) {
+export async function clearHints(
+  paneIds: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
   if (paneIds.length === 0) {
     return;
   }
@@ -124,19 +142,27 @@ async function clearHints(paneIds, env = process.env) {
   }
 }
 
-function isGraphicsDisabled(error) {
-  return error instanceof HerdrRequestError && error.code === "feature_disabled";
+export function isGraphicsDisabled(error: unknown): boolean {
+  return error instanceof HerdrRequestError && "code" in error && error.code === "feature_disabled";
 }
 
-function parseJsonArray(value) {
+function parseJsonArray(value: string | undefined): string[] {
   const parsed = parsePluginContext(value);
-  return Array.isArray(parsed) ? parsed : [];
+  return (Array.isArray(parsed) ? parsed : []) as string[];
 }
 
-function scheduleFinish(targetPaneId, paneIds, env = process.env) {
+export function scheduleFinish(
+  targetPaneId: string,
+  paneIds: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   const child = spawn(
     process.execPath,
-    [path.join(__dirname, "finish-selection.js"), targetPaneId || "", JSON.stringify([...new Set(paneIds)])],
+    [
+      path.join(__dirname, "finish-selection.js"),
+      targetPaneId || "",
+      JSON.stringify([...new Set(paneIds)]),
+    ],
     {
       cwd: path.join(__dirname, ".."),
       detached: true,
@@ -147,25 +173,33 @@ function scheduleFinish(targetPaneId, paneIds, env = process.env) {
   child.unref();
 }
 
-async function main() {
+async function main(): Promise<void> {
   const restore = setupTerminal();
   const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
   let finishScheduled = false;
 
   try {
-    const startupStatus = parsePluginContext(process.env.HERDR_JUMP_STATUS_JSON);
-    if (startupStatus?.message) {
-      renderStatus(startupStatus);
+    const startupStatus = parsePluginContext(
+      process.env.HERDR_JUMP_STATUS_JSON,
+    ) as unknown as Partial<Status>;
+    if (startupStatus.message) {
+      renderStatus(startupStatus as Status);
       await waitForDismiss();
       return;
     }
 
     const context = parsePluginContext(process.env.HERDR_PLUGIN_CONTEXT_JSON);
     const sourcePaneId = resolvePaneIdFromContext(context, process.env);
-    const snapshotLayout = parsePluginContext(process.env.HERDR_JUMP_LAYOUT_JSON);
-    const layout = snapshotLayout?.panes ? snapshotLayout : paneLayout(sourcePaneId, process.env);
-    const targets = buildTargets(layout, new Map(), sourcePaneId, { includeCurrent: true });
-    const status = createStatus(layout, layout?.panes?.length > 1 ? targets : [], sourcePaneId);
+    const snapshotLayout = parsePluginContext(process.env.HERDR_JUMP_LAYOUT_JSON) as PaneLayout;
+    const layout = snapshotLayout.panes ? snapshotLayout : paneLayout(sourcePaneId, process.env);
+    const targets = buildTargets(layout, new Map(), sourcePaneId, {
+      includeCurrent: true,
+    });
+    const status = createStatus(
+      layout,
+      layout?.panes && layout.panes.length > 1 ? targets : [],
+      sourcePaneId,
+    );
 
     if (status) {
       renderStatus(status);
@@ -193,7 +227,8 @@ async function main() {
 
     const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
     const key = process.stdin.isTTY ? await readKey() : targets[0].shortcut;
-    const selected = shortcutMap.get(keyToShortcut(key));
+    const shortcut = keyToShortcut(key);
+    const selected = shortcut === null ? undefined : shortcutMap.get(shortcut);
 
     scheduleFinish(selected?.paneId || "", renderedPaneIds, process.env);
     finishScheduled = true;
@@ -207,19 +242,10 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().catch((error) => {
+  main().catch((error: unknown) => {
     clearScreen();
     showCursor();
-    console.error(error.message);
+    console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
 }
-
-module.exports = {
-  clearHints,
-  graphicsDisabledStatus,
-  isGraphicsDisabled,
-  keyToShortcut,
-  renderHints,
-  scheduleFinish,
-};

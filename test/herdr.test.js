@@ -8,7 +8,13 @@ const path = require("node:path");
 const { chmodSync, mkdtempSync, rmSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
-const { MAX_TIMEOUT_MS, paneGraphicsSetMany, request, requestTimeoutMs, settleRequests } = require("../src/herdr");
+const {
+  MAX_TIMEOUT_MS,
+  paneGraphicsSetMany,
+  request,
+  requestTimeoutMs,
+  settleRequests,
+} = require("../dist/herdr");
 
 function listen(server, socketPath) {
   return new Promise((resolve) => server.listen(socketPath, resolve));
@@ -20,7 +26,10 @@ function close(server) {
 
 function runNode(scriptPath, env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath], { env, stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(process.execPath, [scriptPath], {
+      env,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     let stderr = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => {
@@ -45,14 +54,23 @@ test("request sends one newline-delimited pane.focus request", async () => {
     socket.once("data", (chunk) => {
       received = chunk;
       const parsed = JSON.parse(chunk.trim());
-      socket.write(JSON.stringify({ id: parsed.id, result: { type: "pane_focus", focused_pane_id: parsed.params.pane_id } }) + "\n");
+      socket.write(
+        JSON.stringify({
+          id: parsed.id,
+          result: { type: "pane_focus", focused_pane_id: parsed.params.pane_id },
+        }) + "\n",
+      );
     });
   });
 
   await listen(server, socketPath);
 
   try {
-    const response = await request("pane.focus", { pane_id: "w1:p2" }, { socketPath, id: "test-focus" });
+    const response = await request(
+      "pane.focus",
+      { pane_id: "w1:p2" },
+      { socketPath, id: "test-focus" },
+    );
     assert.deepEqual(JSON.parse(received.trim()), {
       id: "test-focus",
       method: "pane.focus",
@@ -95,7 +113,10 @@ test("request times out when the server does not respond", async () => {
 
   await listen(server, socketPath);
   try {
-    await assert.rejects(request("pane.focus", {}, { socketPath, timeoutMs: 20 }), /timed out after 20ms/);
+    await assert.rejects(
+      request("pane.focus", {}, { socketPath, timeoutMs: 20 }),
+      /timed out after 20ms/,
+    );
   } finally {
     await close(server);
     rmSync(dir, { recursive: true, force: true });
@@ -116,7 +137,13 @@ test("pane graphics requests use independent connections and wait for every resp
     socket.once("data", (chunk) => {
       const payload = JSON.parse(chunk.trim());
       requests.push(payload);
-      setTimeout(() => socket.end(JSON.stringify({ id: payload.id, result: { pane_id: payload.params.pane_id } }) + "\n"), 5);
+      setTimeout(
+        () =>
+          socket.end(
+            JSON.stringify({ id: payload.id, result: { pane_id: payload.params.pane_id } }) + "\n",
+          ),
+        5,
+      );
     });
   });
 
@@ -131,7 +158,10 @@ test("pane graphics requests use independent connections and wait for every resp
     );
 
     assert.equal(requests.length, 2);
-    assert.deepEqual(responses.map((response) => response.result.pane_id).sort(), ["w1:p1", "w1:p2"]);
+    assert.deepEqual(responses.map((response) => response.result.pane_id).sort(), [
+      "w1:p1",
+      "w1:p2",
+    ]);
   } finally {
     await close(server);
     rmSync(dir, { recursive: true, force: true });
@@ -143,10 +173,12 @@ test("settleRequests waits for all work before surfacing a failure", async () =>
   await assert.rejects(
     settleRequests([
       Promise.reject(new Error("first failed")),
-      new Promise((resolve) => setTimeout(() => {
-        completed.push("second");
-        resolve();
-      }, 10)),
+      new Promise((resolve) =>
+        setTimeout(() => {
+          completed.push("second");
+          resolve();
+        }, 10),
+      ),
     ]),
     /first failed/,
   );
@@ -163,7 +195,10 @@ test("open-picker clears rendered hints when the popup command fails", async () 
     socket.once("data", (chunk) => {
       const payload = JSON.parse(chunk.trim());
       methods.push({ method: payload.method, paneId: payload.params.pane_id });
-      const result = payload.method === "pane.graphics.info" ? { cell_width_px: 9, cell_height_px: 18 } : { ok: true };
+      const result =
+        payload.method === "pane.graphics.info"
+          ? { cell_width_px: 9, cell_height_px: 18 }
+          : { ok: true };
       socket.end(JSON.stringify({ id: payload.id, result }) + "\n");
     });
   });
@@ -175,7 +210,7 @@ test("open-picker clears rendered hints when the popup command fails", async () 
 
   await listen(server, socketPath);
   try {
-    const result = await runNode(path.join(__dirname, "..", "src", "open-picker.js"), {
+    const result = await runNode(path.join(__dirname, "..", "dist", "open-picker.js"), {
       ...process.env,
       HERDR_BIN_PATH: fakeHerdrPath,
       HERDR_PANE_ID: "w1:p1",
@@ -186,8 +221,20 @@ test("open-picker clears rendered hints when the popup command fails", async () 
 
     assert.equal(result.code, 1);
     assert.match(result.stderr, /open failed/);
-    assert.deepEqual(methods.filter((entry) => entry.method === "pane.graphics.set").map((entry) => entry.paneId).sort(), ["w1:p1", "w1:p2"]);
-    assert.deepEqual(methods.filter((entry) => entry.method === "pane.graphics.clear").map((entry) => entry.paneId).sort(), ["w1:p1", "w1:p2"]);
+    assert.deepEqual(
+      methods
+        .filter((entry) => entry.method === "pane.graphics.set")
+        .map((entry) => entry.paneId)
+        .sort(),
+      ["w1:p1", "w1:p2"],
+    );
+    assert.deepEqual(
+      methods
+        .filter((entry) => entry.method === "pane.graphics.clear")
+        .map((entry) => entry.paneId)
+        .sort(),
+      ["w1:p1", "w1:p2"],
+    );
   } finally {
     await close(server);
     rmSync(dir, { recursive: true, force: true });
@@ -221,7 +268,7 @@ test("open-picker does not open a popup when jumping is unavailable", async () =
 
   try {
     for (const layout of layouts) {
-      const result = await runNode(path.join(__dirname, "..", "src", "open-picker.js"), {
+      const result = await runNode(path.join(__dirname, "..", "dist", "open-picker.js"), {
         ...process.env,
         HERDR_BIN_PATH: fakeHerdrPath,
         HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ focused_pane_id: "w1:p1" }),

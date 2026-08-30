@@ -1,13 +1,59 @@
-"use strict";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import * as path from "node:path";
+import { deflateSync } from "node:zlib";
 
-const zlib = require("node:zlib");
-const { spawnSync } = require("node:child_process");
-const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
-const path = require("node:path");
+type Color = readonly [red: number, green: number, blue: number, alpha: number];
+
+interface FigletArt {
+  lines: string[];
+  width: number;
+  height: number;
+}
+
+interface ResponsiveSize {
+  width?: number;
+  height?: number;
+  bottomPadding?: number;
+}
+
+export interface CellSize {
+  cell_width_px: number;
+  cell_height_px: number;
+}
+
+interface OverlayTarget {
+  shortcut: string;
+  paneId: string;
+  rect?: Partial<{
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+  }>;
+}
+
+interface OverlayOptions {
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface OverlayParams {
+  pane_id: string;
+  format: "png";
+  image_width: number;
+  image_height: number;
+  data_base64: string;
+  placement: {
+    viewport_col: number;
+    viewport_row: number;
+    grid_cols: number;
+    grid_rows: number;
+  };
+}
 
 const TERMINUS_FONT_PATH = path.join(__dirname, "..", "assets", "fonts", "terminus.flf");
 
-const HINT_COLORS = [
+export const HINT_COLORS: readonly Color[] = [
   [220, 88, 88, 245], // ANSI bright red
   [36, 114, 200, 245], // ANSI blue
   [210, 150, 45, 245], // ANSI amber
@@ -21,23 +67,23 @@ const HINT_COLORS = [
   [188, 63, 188, 245], // ANSI magenta
   [55, 190, 120, 245], // ANSI bright green
 ];
-const DARK_PANE_ID_BACKGROUND = [0, 0, 0, 160];
-const LIGHT_PANE_ID_BACKGROUND = [255, 255, 255, 160];
-const DARK_BACKGROUND = [29, 32, 33, 255];
-const LIGHT_BACKGROUND = [251, 241, 199, 255];
+const DARK_PANE_ID_BACKGROUND: Color = [0, 0, 0, 160];
+const LIGHT_PANE_ID_BACKGROUND: Color = [255, 255, 255, 160];
+const DARK_BACKGROUND: Color = [29, 32, 33, 255];
+const LIGHT_BACKGROUND: Color = [251, 241, 199, 255];
 const MIN_HINT_GRID_COLS = 13;
 const MIN_HINT_GRID_ROWS = 12;
 
-let crcTable = null;
-let systemBackground = null;
-const memoryCache = new Map();
-const figletCache = new Map();
+let crcTable: Uint32Array | null = null;
+let systemBackground: Color | null = null;
+const memoryCache = new Map<string, string>();
+const figletCache = new Map<string, FigletArt>();
 
-function positiveInteger(value) {
-  return Number.isSafeInteger(value) && value > 0;
+function positiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-function backgroundForEnv(env = process.env) {
+export function backgroundForEnv(env: NodeJS.ProcessEnv = process.env): Color {
   const appearance = env.HERDR_EASYMOTION_APPEARANCE?.toLowerCase();
   if (appearance === "light") {
     return LIGHT_BACKGROUND;
@@ -54,7 +100,10 @@ function backgroundForEnv(env = process.env) {
       encoding: "utf8",
       env: { ...process.env, ...env },
     });
-    systemBackground = result.status === 0 && result.stdout.trim().toLowerCase() === "dark" ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    systemBackground =
+      result.status === 0 && result.stdout.trim().toLowerCase() === "dark"
+        ? DARK_BACKGROUND
+        : LIGHT_BACKGROUND;
     return systemBackground;
   }
 
@@ -62,11 +111,13 @@ function backgroundForEnv(env = process.env) {
   return systemBackground;
 }
 
-function paneIdBackgroundForEnv(env = process.env) {
-  return backgroundForEnv(env) === LIGHT_BACKGROUND ? LIGHT_PANE_ID_BACKGROUND : DARK_PANE_ID_BACKGROUND;
+export function paneIdBackgroundForEnv(env: NodeJS.ProcessEnv = process.env): Color {
+  return backgroundForEnv(env) === LIGHT_BACKGROUND
+    ? LIGHT_PANE_ID_BACKGROUND
+    : DARK_PANE_ID_BACKGROUND;
 }
 
-function makeCrcTable() {
+function makeCrcTable(): Uint32Array {
   const table = new Uint32Array(256);
   for (let index = 0; index < 256; index += 1) {
     let crc = index;
@@ -78,7 +129,7 @@ function makeCrcTable() {
   return table;
 }
 
-function crc32(buffer) {
+function crc32(buffer: Buffer): number {
   crcTable ||= makeCrcTable();
   let crc = 0xffffffff;
   for (let index = 0; index < buffer.length; index += 1) {
@@ -87,7 +138,7 @@ function crc32(buffer) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function chunk(type, data) {
+function chunk(type: string, data: Buffer): Buffer {
   const typeBuffer = Buffer.from(type, "ascii");
   const length = Buffer.allocUnsafe(4);
   length.writeUInt32BE(data.length, 0);
@@ -96,7 +147,7 @@ function chunk(type, data) {
   return Buffer.concat([length, typeBuffer, data, checksum]);
 }
 
-function encodePngRgba(width, height, rgba) {
+export function encodePngRgba(width: number, height: number, rgba: Buffer): Buffer {
   const header = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const ihdr = Buffer.allocUnsafe(13);
   ihdr.writeUInt32BE(width, 0);
@@ -118,12 +169,21 @@ function encodePngRgba(width, height, rgba) {
   return Buffer.concat([
     header,
     chunk("IHDR", ihdr),
-    chunk("IDAT", zlib.deflateSync(scanlines)),
+    chunk("IDAT", deflateSync(scanlines)),
     chunk("IEND", Buffer.alloc(0)),
   ]);
 }
 
-function drawRect(rgba, width, height, x, y, rectWidth, rectHeight, color) {
+function drawRect(
+  rgba: Buffer,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  rectWidth: number,
+  rectHeight: number,
+  color: Color,
+): void {
   const [red, green, blue, alpha] = color;
   const startX = Math.max(0, x);
   const startY = Math.max(0, y);
@@ -141,7 +201,7 @@ function drawRect(rgba, width, height, x, y, rectWidth, rectHeight, color) {
   }
 }
 
-function renderFiglet(text, env = process.env) {
+function renderFiglet(text: string, env: NodeJS.ProcessEnv = process.env): FigletArt {
   const figletBin = env.FIGLET_BIN || process.env.FIGLET_BIN || "figlet";
   const cacheKey = `${figletBin}:${text}`;
   const cached = figletCache.get(cacheKey);
@@ -154,7 +214,7 @@ function renderFiglet(text, env = process.env) {
     env: { ...process.env, ...env },
   });
 
-  if (result.error?.code === "ENOENT") {
+  if (result.error && "code" in result.error && result.error.code === "ENOENT") {
     throw new Error("figlet is required to render pane hints but was not found in PATH");
   }
   if (result.error) {
@@ -166,8 +226,10 @@ function renderFiglet(text, env = process.env) {
 
   let lines = result.stdout.replaceAll("\r", "").split("\n");
   while (lines.length > 0 && lines[0].trim() === "") lines.shift();
-  while (lines.length > 0 && lines.at(-1).trim() === "") lines.pop();
-  const firstColumn = Math.min(...lines.map((line) => line.search(/\S/)).filter((column) => column >= 0));
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  const firstColumn = Math.min(
+    ...lines.map((line) => line.search(/\S/)).filter((column) => column >= 0),
+  );
   const lastColumn = Math.max(...lines.map((line) => line.search(/\s*$/)));
   lines = lines.map((line) => line.slice(firstColumn, lastColumn));
 
@@ -180,35 +242,66 @@ function renderFiglet(text, env = process.env) {
   return art;
 }
 
-function drawFiglet(rgba, width, height, art, scale, originX, originY, color) {
+function drawFiglet(
+  rgba: Buffer,
+  width: number,
+  height: number,
+  art: FigletArt,
+  scale: number,
+  originX: number,
+  originY: number,
+  color: Color,
+): void {
   for (let row = 0; row < art.lines.length; row += 1) {
     for (const [col, character] of [...art.lines[row]].entries()) {
       if (character === "█" || character === "▀") {
-        drawRect(rgba, width, height, originX + col * scale, originY + row * scale * 2, scale, scale, color);
+        drawRect(
+          rgba,
+          width,
+          height,
+          originX + col * scale,
+          originY + row * scale * 2,
+          scale,
+          scale,
+          color,
+        );
       }
       if (character === "█" || character === "▄") {
-        drawRect(rgba, width, height, originX + col * scale, originY + (row * 2 + 1) * scale, scale, scale, color);
+        drawRect(
+          rgba,
+          width,
+          height,
+          originX + col * scale,
+          originY + (row * 2 + 1) * scale,
+          scale,
+          scale,
+          color,
+        );
       }
     }
   }
 }
 
-function createHintPngBase64(
-  shortcut,
-  width,
-  height,
-  color = HINT_COLORS[0],
+export function createHintPngBase64(
+  shortcut: string,
+  width: number,
+  height: number,
+  color: Color = HINT_COLORS[0],
   paneId = "",
-  env = process.env,
-  responsiveSize = null,
-) {
+  env: NodeJS.ProcessEnv = process.env,
+  responsiveSize: ResponsiveSize | null = null,
+): string {
   if (!positiveInteger(width) || !positiveInteger(height)) {
     throw new RangeError("Hint image dimensions must be positive safe integers");
   }
 
   const background = backgroundForEnv(env);
-  const responsiveWidth = positiveInteger(responsiveSize?.width) ? Math.min(width, responsiveSize.width) : width;
-  const responsiveHeight = positiveInteger(responsiveSize?.height) ? Math.min(height, responsiveSize.height) : height;
+  const responsiveWidth = positiveInteger(responsiveSize?.width)
+    ? Math.min(width, responsiveSize.width)
+    : width;
+  const responsiveHeight = positiveInteger(responsiveSize?.height)
+    ? Math.min(height, responsiveSize.height)
+    : height;
   const bottomPadding = positiveInteger(responsiveSize?.bottomPadding)
     ? Math.min(height - 1, responsiveSize.bottomPadding)
     : 0;
@@ -221,7 +314,9 @@ function createHintPngBase64(
   const shortcutArt = renderFiglet(shortcut, env);
   const label = String(paneId);
   const labelArt = label ? renderFiglet(label, env) : null;
-  const labelScale = labelArt ? Math.max(1, Math.floor(Math.min(width / labelArt.width, height / 20))) : 0;
+  const labelScale = labelArt
+    ? Math.max(1, Math.floor(Math.min(width / labelArt.width, height / 20)))
+    : 0;
   const labelWidth = labelArt ? labelArt.width * labelScale : 0;
   const labelHeight = labelArt ? labelArt.height * labelScale : 0;
   const gap = label ? Math.max(2, Math.floor(height * 0.04)) : 0;
@@ -269,23 +364,30 @@ function createHintPngBase64(
   return base64;
 }
 
-function colorForIndex(index) {
+export function colorForIndex(index: number): Color {
   return HINT_COLORS[index % HINT_COLORS.length];
 }
 
-function cacheDir(env = process.env) {
-  return env.HERDR_PLUGIN_CACHE_DIR || env.HERDR_PLUGIN_STATE_DIR || path.join(env.HOME || ".", ".cache", "herdr-easymotion");
+function cacheDir(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.HERDR_PLUGIN_CACHE_DIR ||
+    env.HERDR_PLUGIN_STATE_DIR ||
+    path.join(env.HOME || ".", ".cache", "herdr-easymotion")
+  );
 }
 
-function diskCachePath(cacheKey, env = process.env) {
+function diskCachePath(cacheKey: string, env: NodeJS.ProcessEnv = process.env): string {
   return path.join(cacheDir(env), "graphics", `${Buffer.from(cacheKey).toString("hex")}.b64`);
 }
 
-function cellSizeCachePath(env = process.env) {
+function cellSizeCachePath(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(cacheDir(env), "graphics", "cell-size.json");
 }
 
-function getCachedHintBase64(cacheKey, env = process.env) {
+export function getCachedHintBase64(
+  cacheKey: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
   const cached = memoryCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -300,7 +402,11 @@ function getCachedHintBase64(cacheKey, env = process.env) {
   }
 }
 
-function setCachedHintBase64(cacheKey, base64, env = process.env) {
+function setCachedHintBase64(
+  cacheKey: string,
+  base64: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   memoryCache.set(cacheKey, base64);
   try {
     const filePath = diskCachePath(cacheKey, env);
@@ -311,11 +417,21 @@ function setCachedHintBase64(cacheKey, base64, env = process.env) {
   }
 }
 
-function getCachedCellSize(env = process.env) {
+export function getCachedCellSize(env: NodeJS.ProcessEnv = process.env): CellSize | null {
   try {
-    const value = JSON.parse(readFileSync(cellSizeCachePath(env), "utf8"));
-    if (positiveInteger(value.cell_width_px) && positiveInteger(value.cell_height_px)) {
-      return value;
+    const value: unknown = JSON.parse(readFileSync(cellSizeCachePath(env), "utf8"));
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      "cell_width_px" in value &&
+      "cell_height_px" in value &&
+      positiveInteger(value.cell_width_px) &&
+      positiveInteger(value.cell_height_px)
+    ) {
+      return {
+        cell_width_px: value.cell_width_px,
+        cell_height_px: value.cell_height_px,
+      };
     }
   } catch {
     return null;
@@ -323,7 +439,10 @@ function getCachedCellSize(env = process.env) {
   return null;
 }
 
-function setCachedCellSize(info, env = process.env) {
+export function setCachedCellSize(
+  info: Partial<CellSize> | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   if (!positiveInteger(info?.cell_width_px) || !positiveInteger(info?.cell_height_px)) {
     return;
   }
@@ -343,10 +462,17 @@ function setCachedCellSize(info, env = process.env) {
   }
 }
 
-function createOverlayParams(target, graphicsInfo, index, options = {}) {
+export function createOverlayParams(
+  target: OverlayTarget,
+  graphicsInfo: Partial<CellSize> | null | undefined,
+  index: number,
+  options: OverlayOptions = {},
+): OverlayParams {
   const env = options.env || process.env;
   const cellWidth = positiveInteger(graphicsInfo?.cell_width_px) ? graphicsInfo.cell_width_px : 1;
-  const cellHeight = positiveInteger(graphicsInfo?.cell_height_px) ? graphicsInfo.cell_height_px : 1;
+  const cellHeight = positiveInteger(graphicsInfo?.cell_height_px)
+    ? graphicsInfo.cell_height_px
+    : 1;
   const paneCols = positiveInteger(target?.rect?.width) ? target.rect.width : 1;
   const paneRows = positiveInteger(target?.rect?.height) ? target.rect.height : 1;
   const responsiveGridRows = Math.max(1, Math.min(28, Math.floor(paneRows * 0.68)));
@@ -367,7 +493,15 @@ function createOverlayParams(target, graphicsInfo, index, options = {}) {
   const cacheKey = `v10:${target.shortcut}:${target.paneId}:${imageWidth}:${imageHeight}:${color.join(",")}:${background.join(",")}:${responsiveSize.width}:${responsiveSize.height}:${responsiveSize.bottomPadding}`;
   let dataBase64 = getCachedHintBase64(cacheKey, env);
   if (!dataBase64) {
-    dataBase64 = createHintPngBase64(target.shortcut, imageWidth, imageHeight, color, target.paneId, env, responsiveSize);
+    dataBase64 = createHintPngBase64(
+      target.shortcut,
+      imageWidth,
+      imageHeight,
+      color,
+      target.paneId,
+      env,
+      responsiveSize,
+    );
     setCachedHintBase64(cacheKey, dataBase64, env);
   }
 
@@ -385,16 +519,3 @@ function createOverlayParams(target, graphicsInfo, index, options = {}) {
     },
   };
 }
-
-module.exports = {
-  backgroundForEnv,
-  HINT_COLORS,
-  colorForIndex,
-  createHintPngBase64,
-  createOverlayParams,
-  encodePngRgba,
-  getCachedCellSize,
-  getCachedHintBase64,
-  paneIdBackgroundForEnv,
-  setCachedCellSize,
-};

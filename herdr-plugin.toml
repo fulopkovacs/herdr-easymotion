@@ -9,7 +9,7 @@ platforms = ["linux", "macos", "windows"]
 id = "pane"
 title = "Select pane"
 contexts = ["pane", "tab", "workspace"]
-command = ["node", "src/open-picker.js"]
+command = ["node", "dist/open-picker.js"]
 
 [[panes]]
 id = "picker"
@@ -17,4 +17,4 @@ title = "\u200B"
 placement = "popup"
 width = 0
 height = 0
-command = ["node", "src/picker.js"]
+command = ["node", "dist/picker.js"]
