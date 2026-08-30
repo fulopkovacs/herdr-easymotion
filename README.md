@@ -55,5 +55,5 @@ Hints target panes in the active tab layout. If the tab is zoomed, Herdr only ex
 
 This plugin was written by Elliot Jackson.
 
-* Blog: https://elliotekj.com
-* Email: elliot@elliotekj.com
+- Blog: https://elliotekj.com
+- Email: elliot@elliotekj.com

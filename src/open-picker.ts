@@ -1,23 +1,28 @@
 #!/usr/bin/env node
-"use strict";
 
-const { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } = require("./core");
-const { paneLayout, runHerdr } = require("./herdr");
-const { clearHints, graphicsDisabledStatus, isGraphicsDisabled, renderHints } = require("./picker");
+import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
+import { paneLayout, runHerdr } from "./herdr";
+import { clearHints, graphicsDisabledStatus, isGraphicsDisabled, renderHints } from "./picker";
 
-async function main() {
+async function main(): Promise<void> {
   const env = process.env;
   const pluginId = env.HERDR_PLUGIN_ID || "com.elliotekj.herdr-easymotion";
   const context = parsePluginContext(env.HERDR_PLUGIN_CONTEXT_JSON);
   const sourcePaneId = resolvePaneIdFromContext(context, env);
   const layout = paneLayout(sourcePaneId, env);
-  const targets = buildTargets(layout, new Map(), sourcePaneId, { includeCurrent: true });
-  const status = createStatus(layout, layout?.panes?.length > 1 ? targets : [], sourcePaneId);
+  const targets = buildTargets(layout, new Map(), sourcePaneId, {
+    includeCurrent: true,
+  });
+  const status = createStatus(
+    layout,
+    layout?.panes && layout.panes.length > 1 ? targets : [],
+    sourcePaneId,
+  );
   if (status) {
     return;
   }
 
-  let renderedPaneIds = [];
+  let renderedPaneIds: string[] = [];
   let startupStatus = null;
 
   try {
@@ -67,7 +72,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error.message);
+main().catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 });

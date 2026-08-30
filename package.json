@@ -5,9 +5,22 @@
   "description": "Herdr plugin for EasyMotion-style pane jumping.",
   "license": "Apache-2.0",
   "scripts": {
-    "test": "node --test"
+    "build": "tsgo --project tsconfig.json",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint --deny-warnings src test",
+    "test": "pnpm run build && node --test",
+    "typecheck": "tsgo --project tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0"
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "packageManager": "pnpm@11.1.1"
 }

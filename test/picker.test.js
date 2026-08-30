@@ -2,8 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { HerdrRequestError } = require("../src/herdr");
-const { graphicsDisabledStatus, isGraphicsDisabled, keyToShortcut } = require("../src/picker");
+const { HerdrRequestError } = require("../dist/herdr");
+const { graphicsDisabledStatus, isGraphicsDisabled, keyToShortcut } = require("../dist/picker");
 
 test("keyToShortcut handles select and cancel keys", () => {
   assert.equal(keyToShortcut("1"), "1");

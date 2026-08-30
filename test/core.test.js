@@ -12,7 +12,7 @@ const {
   SHORTCUTS,
   sortLayoutPanes,
   truncateMiddle,
-} = require("../src/core");
+} = require("../dist/core");
 
 test("parsePluginContext tolerates missing and invalid context", () => {
   assert.deepEqual(parsePluginContext(""), {});
@@ -39,7 +39,10 @@ test("sortLayoutPanes sorts row-major by y then x", () => {
     { pane_id: "left", rect: { x: 0, y: 10 } },
   ];
 
-  assert.deepEqual(sortLayoutPanes(panes).map((pane) => pane.pane_id), ["top", "left", "right"]);
+  assert.deepEqual(
+    sortLayoutPanes(panes).map((pane) => pane.pane_id),
+    ["top", "left", "right"],
+  );
 });
 
 test("buildTargets excludes the current pane and assigns shortcuts", () => {
@@ -95,15 +98,30 @@ test("buildTargets can include the current pane for visual hint mode", () => {
 });
 
 test("createStatus handles zoomed and single-pane layouts", () => {
-  assert.equal(createStatus({ zoomed: true }, [{ paneId: "w1:p2" }], "w1:p1").message, "Only the zoomed pane is visible.");
-  assert.equal(createStatus({ focused_pane_id: "w1:p1", zoomed: false }, [], "w1:p1").message, "No other visible panes.");
-  assert.equal(createStatus({ focused_pane_id: "w1:p1", zoomed: false }, [{ paneId: "w1:p2" }], "w1:p1"), null);
+  assert.equal(
+    createStatus({ zoomed: true }, [{ paneId: "w1:p2" }], "w1:p1").message,
+    "Only the zoomed pane is visible.",
+  );
+  assert.equal(
+    createStatus({ focused_pane_id: "w1:p1", zoomed: false }, [], "w1:p1").message,
+    "No other visible panes.",
+  );
+  assert.equal(
+    createStatus({ focused_pane_id: "w1:p1", zoomed: false }, [{ paneId: "w1:p2" }], "w1:p1"),
+    null,
+  );
 });
 
 test("formatPaneLabel falls back through title, agent, cwd, and pane id", () => {
   assert.equal(formatPaneLabel({ pane_id: "w1:p1" }, { label: "api" }), "api");
-  assert.equal(formatPaneLabel({ pane_id: "w1:p1" }, { agent: "codex", agent_status: "idle" }), "codex idle");
-  assert.equal(formatPaneLabel({ pane_id: "w1:p1" }, { foreground_cwd: "/tmp/project" }), "project");
+  assert.equal(
+    formatPaneLabel({ pane_id: "w1:p1" }, { agent: "codex", agent_status: "idle" }),
+    "codex idle",
+  );
+  assert.equal(
+    formatPaneLabel({ pane_id: "w1:p1" }, { foreground_cwd: "/tmp/project" }),
+    "project",
+  );
   assert.equal(formatPaneLabel({ pane_id: "w1:p1" }, {}), "w1:p1");
 });
 

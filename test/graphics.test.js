@@ -15,12 +15,18 @@ const {
   getCachedHintBase64,
   paneIdBackgroundForEnv,
   setCachedCellSize,
-} = require("../src/graphics");
+} = require("../dist/graphics");
 
 test("backgroundForEnv supports explicit light and dark appearances", () => {
-  assert.deepEqual(backgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "light" }), [251, 241, 199, 255]);
+  assert.deepEqual(
+    backgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "light" }),
+    [251, 241, 199, 255],
+  );
   assert.deepEqual(backgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "dark" }), [29, 32, 33, 255]);
-  assert.deepEqual(paneIdBackgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "light" }), [255, 255, 255, 160]);
+  assert.deepEqual(
+    paneIdBackgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "light" }),
+    [255, 255, 255, 160],
+  );
   assert.deepEqual(paneIdBackgroundForEnv({ HERDR_EASYMOTION_APPEARANCE: "dark" }), [0, 0, 0, 160]);
 });
 
@@ -69,20 +75,23 @@ test("createHintPngBase64 preserves pane id letter casing", () => {
 });
 
 test("hint colors use high-contrast ANSI neighbors", () => {
-  assert.deepEqual(HINT_COLORS.map((color) => color.slice(0, 3)), [
-    [220, 88, 88],
-    [36, 114, 200],
-    [210, 150, 45],
-    [75, 185, 210],
-    [205, 49, 49],
-    [80, 150, 220],
-    [229, 192, 64],
-    [17, 168, 205],
-    [205, 105, 205],
-    [13, 188, 121],
-    [188, 63, 188],
-    [55, 190, 120],
-  ]);
+  assert.deepEqual(
+    HINT_COLORS.map((color) => color.slice(0, 3)),
+    [
+      [220, 88, 88],
+      [36, 114, 200],
+      [210, 150, 45],
+      [75, 185, 210],
+      [205, 49, 49],
+      [80, 150, 220],
+      [229, 192, 64],
+      [17, 168, 205],
+      [205, 105, 205],
+      [13, 188, 121],
+      [188, 63, 188],
+      [55, 190, 120],
+    ],
+  );
 
   for (let index = 0; index < HINT_COLORS.length; index += 1) {
     const next = (index + 1) % HINT_COLORS.length;
@@ -139,7 +148,12 @@ test("createOverlayParams keeps the hint floor while scaling the pane number", (
 
   try {
     const small = createOverlayParams(target, graphicsInfo, 4, options);
-    const smaller = createOverlayParams({ ...target, rect: { ...target.rect, height: 6 } }, graphicsInfo, 4, options);
+    const smaller = createOverlayParams(
+      { ...target, rect: { ...target.rect, height: 6 } },
+      graphicsInfo,
+      4,
+      options,
+    );
 
     assert.deepEqual([small.image_width, small.image_height], [117, 216]);
     assert.deepEqual([smaller.image_width, smaller.image_height], [117, 216]);
