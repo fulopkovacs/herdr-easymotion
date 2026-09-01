@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { deflateSync } from "node:zlib";
 
@@ -78,6 +78,7 @@ let crcTable: Uint32Array | null = null;
 let systemBackground: Color | null = null;
 const memoryCache = new Map<string, string>();
 const figletCache = new Map<string, FigletArt>();
+let figletGlyphs: Map<string, string[]> | null = null;
 
 function positiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -96,14 +97,48 @@ export function backgroundForEnv(env: NodeJS.ProcessEnv = process.env): Color {
   }
 
   if (process.platform === "darwin") {
+    const preferencesPath = path.join(
+      env.HOME || process.env.HOME || "",
+      "Library",
+      "Preferences",
+      ".GlobalPreferences.plist",
+    );
+    const appearancePath = path.join(cacheDir(env), "graphics", "appearance.json");
+    let preferenceMtimeMs: number | null = null;
+
+    try {
+      preferenceMtimeMs = statSync(preferencesPath).mtimeMs;
+      const cached: unknown = JSON.parse(readFileSync(appearancePath, "utf8"));
+      if (
+        cached !== null &&
+        typeof cached === "object" &&
+        "preference_mtime_ms" in cached &&
+        "dark" in cached &&
+        cached.preference_mtime_ms === preferenceMtimeMs &&
+        typeof cached.dark === "boolean"
+      ) {
+        systemBackground = cached.dark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+        return systemBackground;
+      }
+    } catch {
+      // Detect and cache the appearance below.
+    }
+
     const result = spawnSync("defaults", ["read", "-g", "AppleInterfaceStyle"], {
       encoding: "utf8",
       env: { ...process.env, ...env },
     });
-    systemBackground =
-      result.status === 0 && result.stdout.trim().toLowerCase() === "dark"
-        ? DARK_BACKGROUND
-        : LIGHT_BACKGROUND;
+    const dark = result.status === 0 && result.stdout.trim().toLowerCase() === "dark";
+    systemBackground = dark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+    try {
+      mkdirSync(path.dirname(appearancePath), { recursive: true });
+      writeFileSync(
+        appearancePath,
+        JSON.stringify({ preference_mtime_ms: preferenceMtimeMs, dark }),
+      );
+    } catch {
+      // Appearance caching is an optimization only.
+    }
     return systemBackground;
   }
 
@@ -201,30 +236,55 @@ function drawRect(
   }
 }
 
-function renderFiglet(text: string, env: NodeJS.ProcessEnv = process.env): FigletArt {
-  const figletBin = env.FIGLET_BIN || process.env.FIGLET_BIN || "figlet";
-  const cacheKey = `${figletBin}:${text}`;
-  const cached = figletCache.get(cacheKey);
+function loadFigletGlyphs(): Map<string, string[]> {
+  if (figletGlyphs) {
+    return figletGlyphs;
+  }
+
+  const lines = readFileSync(TERMINUS_FONT_PATH, "utf8").replaceAll("\r", "").split("\n");
+  const header = lines[0].split(" ");
+  const hardblank = header[0].slice(5);
+  const height = Number(header[1]);
+  const commentLines = Number(header[5]);
+  let offset = commentLines + 1;
+  const glyphs = new Map<string, string[]>();
+
+  // Terminus is fixed-width, so FIGlet's output is the glyph rows concatenated directly.
+  for (let codePoint = 32; codePoint <= 126; codePoint += 1) {
+    const rawGlyph = lines.slice(offset, offset + height);
+    offset += height;
+    const endmark = rawGlyph[0]?.at(-1) || "";
+    glyphs.set(
+      String.fromCodePoint(codePoint),
+      rawGlyph.map((line) => {
+        while (endmark && line.endsWith(endmark)) {
+          line = line.slice(0, -endmark.length);
+        }
+        return line.replaceAll(hardblank, " ");
+      }),
+    );
+  }
+
+  figletGlyphs = glyphs;
+  return glyphs;
+}
+
+function renderFiglet(text: string): FigletArt {
+  const cached = figletCache.get(text);
   if (cached) {
     return cached;
   }
 
-  const result = spawnSync(figletBin, ["-f", TERMINUS_FONT_PATH, "-w", "1000", String(text)], {
-    encoding: "utf8",
-    env: { ...process.env, ...env },
-  });
-
-  if (result.error && "code" in result.error && result.error.code === "ENOENT") {
-    throw new Error("figlet is required to render pane hints but was not found in PATH");
-  }
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(`figlet failed with exit ${result.status}: ${result.stderr.trim()}`);
+  const glyphs = loadFigletGlyphs();
+  let lines = Array.from({ length: glyphs.get(" ")?.length || 0 }, () => "");
+  for (const character of String(text)) {
+    const glyph = glyphs.get(character) || glyphs.get("?");
+    if (!glyph) {
+      continue;
+    }
+    lines = lines.map((line, row) => line + glyph[row]);
   }
 
-  let lines = result.stdout.replaceAll("\r", "").split("\n");
   while (lines.length > 0 && lines[0].trim() === "") lines.shift();
   while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
   const firstColumn = Math.min(
@@ -238,7 +298,7 @@ function renderFiglet(text: string, env: NodeJS.ProcessEnv = process.env): Figle
     width: Math.max(...lines.map((line) => [...line].length)),
     height: lines.length * 2,
   };
-  figletCache.set(cacheKey, art);
+  figletCache.set(text, art);
   return art;
 }
 
@@ -311,9 +371,9 @@ export function createHintPngBase64(
     return cached;
   }
 
-  const shortcutArt = renderFiglet(shortcut, env);
+  const shortcutArt = renderFiglet(shortcut);
   const label = String(paneId);
-  const labelArt = label ? renderFiglet(label, env) : null;
+  const labelArt = label ? renderFiglet(label) : null;
   const labelScale = labelArt
     ? Math.max(1, Math.floor(Math.min(width / labelArt.width, height / 20)))
     : 0;

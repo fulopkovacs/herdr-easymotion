@@ -72,6 +72,7 @@ let crcTable = null;
 let systemBackground = null;
 const memoryCache = new Map();
 const figletCache = new Map();
+let figletGlyphs = null;
 function positiveInteger(value) {
     return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
@@ -87,14 +88,38 @@ function backgroundForEnv(env = process.env) {
         return systemBackground;
     }
     if (process.platform === "darwin") {
+        const preferencesPath = path.join(env.HOME || process.env.HOME || "", "Library", "Preferences", ".GlobalPreferences.plist");
+        const appearancePath = path.join(cacheDir(env), "graphics", "appearance.json");
+        let preferenceMtimeMs = null;
+        try {
+            preferenceMtimeMs = (0, node_fs_1.statSync)(preferencesPath).mtimeMs;
+            const cached = JSON.parse((0, node_fs_1.readFileSync)(appearancePath, "utf8"));
+            if (cached !== null &&
+                typeof cached === "object" &&
+                "preference_mtime_ms" in cached &&
+                "dark" in cached &&
+                cached.preference_mtime_ms === preferenceMtimeMs &&
+                typeof cached.dark === "boolean") {
+                systemBackground = cached.dark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+                return systemBackground;
+            }
+        }
+        catch {
+            // Detect and cache the appearance below.
+        }
         const result = (0, node_child_process_1.spawnSync)("defaults", ["read", "-g", "AppleInterfaceStyle"], {
             encoding: "utf8",
             env: { ...process.env, ...env },
         });
-        systemBackground =
-            result.status === 0 && result.stdout.trim().toLowerCase() === "dark"
-                ? DARK_BACKGROUND
-                : LIGHT_BACKGROUND;
+        const dark = result.status === 0 && result.stdout.trim().toLowerCase() === "dark";
+        systemBackground = dark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+        try {
+            (0, node_fs_1.mkdirSync)(path.dirname(appearancePath), { recursive: true });
+            (0, node_fs_1.writeFileSync)(appearancePath, JSON.stringify({ preference_mtime_ms: preferenceMtimeMs, dark }));
+        }
+        catch {
+            // Appearance caching is an optimization only.
+        }
         return systemBackground;
     }
     systemBackground = DARK_BACKGROUND;
@@ -172,27 +197,46 @@ function drawRect(rgba, width, height, x, y, rectWidth, rectHeight, color) {
         }
     }
 }
-function renderFiglet(text, env = process.env) {
-    const figletBin = env.FIGLET_BIN || process.env.FIGLET_BIN || "figlet";
-    const cacheKey = `${figletBin}:${text}`;
-    const cached = figletCache.get(cacheKey);
+function loadFigletGlyphs() {
+    if (figletGlyphs) {
+        return figletGlyphs;
+    }
+    const lines = (0, node_fs_1.readFileSync)(TERMINUS_FONT_PATH, "utf8").replaceAll("\r", "").split("\n");
+    const header = lines[0].split(" ");
+    const hardblank = header[0].slice(5);
+    const height = Number(header[1]);
+    const commentLines = Number(header[5]);
+    let offset = commentLines + 1;
+    const glyphs = new Map();
+    // Terminus is fixed-width, so FIGlet's output is the glyph rows concatenated directly.
+    for (let codePoint = 32; codePoint <= 126; codePoint += 1) {
+        const rawGlyph = lines.slice(offset, offset + height);
+        offset += height;
+        const endmark = rawGlyph[0]?.at(-1) || "";
+        glyphs.set(String.fromCodePoint(codePoint), rawGlyph.map((line) => {
+            while (endmark && line.endsWith(endmark)) {
+                line = line.slice(0, -endmark.length);
+            }
+            return line.replaceAll(hardblank, " ");
+        }));
+    }
+    figletGlyphs = glyphs;
+    return glyphs;
+}
+function renderFiglet(text) {
+    const cached = figletCache.get(text);
     if (cached) {
         return cached;
     }
-    const result = (0, node_child_process_1.spawnSync)(figletBin, ["-f", TERMINUS_FONT_PATH, "-w", "1000", String(text)], {
-        encoding: "utf8",
-        env: { ...process.env, ...env },
-    });
-    if (result.error && "code" in result.error && result.error.code === "ENOENT") {
-        throw new Error("figlet is required to render pane hints but was not found in PATH");
+    const glyphs = loadFigletGlyphs();
+    let lines = Array.from({ length: glyphs.get(" ")?.length || 0 }, () => "");
+    for (const character of String(text)) {
+        const glyph = glyphs.get(character) || glyphs.get("?");
+        if (!glyph) {
+            continue;
+        }
+        lines = lines.map((line, row) => line + glyph[row]);
     }
-    if (result.error) {
-        throw result.error;
-    }
-    if (result.status !== 0) {
-        throw new Error(`figlet failed with exit ${result.status}: ${result.stderr.trim()}`);
-    }
-    let lines = result.stdout.replaceAll("\r", "").split("\n");
     while (lines.length > 0 && lines[0].trim() === "")
         lines.shift();
     while (lines.length > 0 && lines[lines.length - 1].trim() === "")
@@ -205,7 +249,7 @@ function renderFiglet(text, env = process.env) {
         width: Math.max(...lines.map((line) => [...line].length)),
         height: lines.length * 2,
     };
-    figletCache.set(cacheKey, art);
+    figletCache.set(text, art);
     return art;
 }
 function drawFiglet(rgba, width, height, art, scale, originX, originY, color) {
@@ -239,9 +283,9 @@ function createHintPngBase64(shortcut, width, height, color = exports.HINT_COLOR
     if (cached) {
         return cached;
     }
-    const shortcutArt = renderFiglet(shortcut, env);
+    const shortcutArt = renderFiglet(shortcut);
     const label = String(paneId);
-    const labelArt = label ? renderFiglet(label, env) : null;
+    const labelArt = label ? renderFiglet(label) : null;
     const labelScale = labelArt
         ? Math.max(1, Math.floor(Math.min(width / labelArt.width, height / 20)))
         : 0;

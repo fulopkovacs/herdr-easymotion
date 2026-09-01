@@ -195,6 +195,15 @@ test("open-picker clears rendered hints when the popup command fails", async () 
     socket.once("data", (chunk) => {
       const payload = JSON.parse(chunk.trim());
       methods.push({ method: payload.method, paneId: payload.params.pane_id });
+      if (payload.method === "plugin.pane.open") {
+        socket.end(
+          JSON.stringify({
+            id: payload.id,
+            error: { code: "plugin_pane_open_failed", message: "open failed" },
+          }) + "\n",
+        );
+        return;
+      }
       const result =
         payload.method === "pane.graphics.info"
           ? { cell_width_px: 9, cell_height_px: 18 }
@@ -279,6 +288,60 @@ test("open-picker does not open a popup when jumping is unavailable", async () =
       assert.equal(result.stderr, "");
     }
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("picker focuses the selection and clears hints without a finish process", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const dir = mkdtempSync(path.join(os.tmpdir(), "herdr-easymotion-"));
+  const socketPath = path.join(dir, "herdr.sock");
+  const methods = [];
+  const server = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    socket.once("data", (chunk) => {
+      const payload = JSON.parse(chunk.trim());
+      methods.push({ method: payload.method, paneId: payload.params.pane_id });
+      socket.end(JSON.stringify({ id: payload.id, result: { ok: true } }) + "\n");
+    });
+  });
+  const layout = {
+    focused_pane_id: "w1:p1",
+    zoomed: false,
+    panes: [
+      { pane_id: "w1:p1", rect: { x: 0, y: 0, width: 80, height: 24 } },
+      { pane_id: "w1:p2", rect: { x: 80, y: 0, width: 80, height: 24 } },
+    ],
+  };
+
+  await listen(server, socketPath);
+  try {
+    const result = await runNode(path.join(__dirname, "..", "dist", "picker.js"), {
+      ...process.env,
+      HERDR_JUMP_LAYOUT_JSON: JSON.stringify(layout),
+      HERDR_JUMP_PRE_RENDERED_PANES_JSON: JSON.stringify(["w1:p1", "w1:p2"]),
+      HERDR_JUMP_SOURCE_PANE_ID: "w1:p1",
+      HERDR_SOCKET_PATH: socketPath,
+    });
+
+    assert.equal(result.code, 0);
+    assert.deepEqual(
+      methods.sort((left, right) =>
+        `${left.method}:${left.paneId}`.localeCompare(`${right.method}:${right.paneId}`),
+      ),
+      [
+        { method: "pane.focus", paneId: "w1:p1" },
+        { method: "pane.graphics.clear", paneId: "w1:p1" },
+        { method: "pane.graphics.clear", paneId: "w1:p2" },
+      ].sort((left, right) =>
+        `${left.method}:${left.paneId}`.localeCompare(`${right.method}:${right.paneId}`),
+      ),
+    );
+  } finally {
+    await close(server);
     rmSync(dir, { recursive: true, force: true });
   }
 });

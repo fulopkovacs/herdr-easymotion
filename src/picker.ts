@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import path from "node:path";
+import { readFile, rm } from "node:fs/promises";
 import readline from "node:readline";
 
 import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
@@ -10,6 +9,7 @@ import { createOverlayParams, getCachedCellSize, setCachedCellSize } from "./gra
 import type { CellSize } from "./graphics";
 import {
   HerdrRequestError,
+  focusPane,
   paneGraphicsClearMany,
   paneGraphicsInfo,
   paneGraphicsSetMany,
@@ -20,6 +20,11 @@ interface RenderHintsOptions {
   env?: NodeJS.ProcessEnv;
   sourcePaneId?: string | null;
   controlPaneId?: string | null;
+}
+
+interface RenderResult {
+  paneIds?: string[];
+  status?: Status;
 }
 
 function clearScreen(): void {
@@ -151,37 +156,52 @@ function parseJsonArray(value: string | undefined): string[] {
   return (Array.isArray(parsed) ? parsed : []) as string[];
 }
 
-export function scheduleFinish(
-  targetPaneId: string,
-  paneIds: string[],
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  const child = spawn(
-    process.execPath,
-    [
-      path.join(__dirname, "finish-selection.js"),
-      targetPaneId || "",
-      JSON.stringify([...new Set(paneIds)]),
-    ],
-    {
-      cwd: path.join(__dirname, ".."),
-      detached: true,
-      env,
-      stdio: "ignore",
+async function waitForRenderResult(filePath: string): Promise<RenderResult> {
+  const deadline = Date.now() + 5500;
+
+  while (Date.now() < deadline) {
+    try {
+      const result = JSON.parse(await readFile(filePath, "utf8")) as RenderResult;
+      await rm(filePath, { force: true });
+      return result;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        return {
+          status: {
+            title: "Jump",
+            message: "Pane hints could not be rendered.",
+            detail: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+  }
+
+  return {
+    status: {
+      title: "Jump",
+      message: "Pane hints timed out.",
+      detail: "Herdr did not finish rendering pane hints.",
     },
-  );
-  child.unref();
+  };
 }
 
 async function main(): Promise<void> {
   const restore = setupTerminal();
   const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
-  let finishScheduled = false;
+  let hintsCleared = false;
 
   try {
-    const startupStatus = parsePluginContext(
+    let startupStatus = parsePluginContext(
       process.env.HERDR_JUMP_STATUS_JSON,
     ) as unknown as Partial<Status>;
+    const renderStatusPath = process.env.HERDR_JUMP_RENDER_STATUS_PATH;
+    if (renderStatusPath) {
+      const renderResult = await waitForRenderResult(renderStatusPath);
+      renderedPaneIds.push(...(renderResult.paneIds || []));
+      startupStatus = renderResult.status || startupStatus;
+    }
     if (startupStatus.message) {
       renderStatus(startupStatus as Status);
       await waitForDismiss();
@@ -230,10 +250,16 @@ async function main(): Promise<void> {
     const shortcut = keyToShortcut(key);
     const selected = shortcut === null ? undefined : shortcutMap.get(shortcut);
 
-    scheduleFinish(selected?.paneId || "", renderedPaneIds, process.env);
-    finishScheduled = true;
+    const [focusResult] = await Promise.allSettled([
+      selected ? focusPane(selected.paneId, process.env) : Promise.resolve(),
+      clearHints(renderedPaneIds, process.env),
+    ]);
+    hintsCleared = true;
+    if (focusResult.status === "rejected") {
+      throw focusResult.reason;
+    }
   } finally {
-    if (!finishScheduled) {
+    if (!hintsCleared) {
       await clearHints(renderedPaneIds, process.env);
     }
     clearScreen();

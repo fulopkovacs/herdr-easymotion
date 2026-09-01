@@ -33,6 +33,14 @@ export interface PaneGraphicsSetParams {
   [key: string]: unknown;
 }
 
+export interface PluginPaneOpenParams extends Record<string, unknown> {
+  plugin_id: string;
+  entrypoint: string;
+  placement?: "overlay" | "popup" | "split" | "tab" | "zoomed";
+  env?: Record<string, string>;
+  focus?: boolean;
+}
+
 export const MAX_TIMEOUT_MS = 2_147_483_647;
 
 export class HerdrRequestError extends Error {
@@ -246,6 +254,13 @@ export function focusPane(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HerdrResponse> {
   return request("pane.focus", { pane_id: paneId }, { env });
+}
+
+export function openPluginPane(
+  params: PluginPaneOpenParams,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<HerdrResponse> {
+  return request("plugin.pane.open", params, { env });
 }
 
 export async function paneGraphicsInfo(

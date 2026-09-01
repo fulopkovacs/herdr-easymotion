@@ -23,8 +23,6 @@ kitty_graphics = true
 
 Reload or restart Herdr after changing the config.
 
-Pane hints are rendered with the `figlet` CLI. Install FIGlet and ensure `figlet` is available in your `PATH` before invoking the plugin.
-
 The hint background follows the macOS light or dark appearance. On other platforms, or to override detection, set `HERDR_EASYMOTION_APPEARANCE` to `light` or `dark`.
 
 ## Usage

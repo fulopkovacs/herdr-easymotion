@@ -9,9 +9,7 @@ exports.keyToShortcut = keyToShortcut;
 exports.renderHints = renderHints;
 exports.clearHints = clearHints;
 exports.isGraphicsDisabled = isGraphicsDisabled;
-exports.scheduleFinish = scheduleFinish;
-const node_child_process_1 = require("node:child_process");
-const node_path_1 = __importDefault(require("node:path"));
+const promises_1 = require("node:fs/promises");
 const node_readline_1 = __importDefault(require("node:readline"));
 const core_1 = require("./core");
 const graphics_1 = require("./graphics");
@@ -113,25 +111,47 @@ function parseJsonArray(value) {
     const parsed = (0, core_1.parsePluginContext)(value);
     return (Array.isArray(parsed) ? parsed : []);
 }
-function scheduleFinish(targetPaneId, paneIds, env = process.env) {
-    const child = (0, node_child_process_1.spawn)(process.execPath, [
-        node_path_1.default.join(__dirname, "finish-selection.js"),
-        targetPaneId || "",
-        JSON.stringify([...new Set(paneIds)]),
-    ], {
-        cwd: node_path_1.default.join(__dirname, ".."),
-        detached: true,
-        env,
-        stdio: "ignore",
-    });
-    child.unref();
+async function waitForRenderResult(filePath) {
+    const deadline = Date.now() + 5500;
+    while (Date.now() < deadline) {
+        try {
+            const result = JSON.parse(await (0, promises_1.readFile)(filePath, "utf8"));
+            await (0, promises_1.rm)(filePath, { force: true });
+            return result;
+        }
+        catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+                return {
+                    status: {
+                        title: "Jump",
+                        message: "Pane hints could not be rendered.",
+                        detail: error instanceof Error ? error.message : String(error),
+                    },
+                };
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+    }
+    return {
+        status: {
+            title: "Jump",
+            message: "Pane hints timed out.",
+            detail: "Herdr did not finish rendering pane hints.",
+        },
+    };
 }
 async function main() {
     const restore = setupTerminal();
     const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
-    let finishScheduled = false;
+    let hintsCleared = false;
     try {
-        const startupStatus = (0, core_1.parsePluginContext)(process.env.HERDR_JUMP_STATUS_JSON);
+        let startupStatus = (0, core_1.parsePluginContext)(process.env.HERDR_JUMP_STATUS_JSON);
+        const renderStatusPath = process.env.HERDR_JUMP_RENDER_STATUS_PATH;
+        if (renderStatusPath) {
+            const renderResult = await waitForRenderResult(renderStatusPath);
+            renderedPaneIds.push(...(renderResult.paneIds || []));
+            startupStatus = renderResult.status || startupStatus;
+        }
         if (startupStatus.message) {
             renderStatus(startupStatus);
             await waitForDismiss();
@@ -170,11 +190,17 @@ async function main() {
         const key = process.stdin.isTTY ? await readKey() : targets[0].shortcut;
         const shortcut = keyToShortcut(key);
         const selected = shortcut === null ? undefined : shortcutMap.get(shortcut);
-        scheduleFinish(selected?.paneId || "", renderedPaneIds, process.env);
-        finishScheduled = true;
+        const [focusResult] = await Promise.allSettled([
+            selected ? (0, herdr_1.focusPane)(selected.paneId, process.env) : Promise.resolve(),
+            clearHints(renderedPaneIds, process.env),
+        ]);
+        hintsCleared = true;
+        if (focusResult.status === "rejected") {
+            throw focusResult.reason;
+        }
     }
     finally {
-        if (!finishScheduled) {
+        if (!hintsCleared) {
             await clearHints(renderedPaneIds, process.env);
         }
         clearScreen();
