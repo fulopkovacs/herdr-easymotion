@@ -32,6 +32,13 @@ interface TerminalSession {
   restore: () => void;
 }
 
+interface PaneSelection {
+  shortcut: string;
+  copyPaneId: boolean;
+}
+
+const SHIFTED_NUMBER_KEYS = "!@#$%^&*(";
+
 function clearScreen(): void {
   process.stdout.write("\x1b[2J\x1b[H");
 }
@@ -95,12 +102,23 @@ async function waitForDismiss(firstKey: Promise<string> | null): Promise<void> {
   }
 }
 
-export function keyToShortcut(key: string): string | null {
+export function keyToSelection(key: string): PaneSelection | null {
   if (key === "\u0003" || key === "\u001b" || key.toLowerCase() === "q") {
     return null;
   }
 
-  return key.toLowerCase();
+  const shiftedNumberIndex = SHIFTED_NUMBER_KEYS.indexOf(key);
+  return {
+    shortcut: shiftedNumberIndex === -1 ? key.toLowerCase() : String(shiftedNumberIndex + 1),
+    copyPaneId: shiftedNumberIndex !== -1,
+  };
+}
+
+export function copyPaneId(
+  paneId: string,
+  output: Pick<NodeJS.WritableStream, "write"> = process.stdout,
+): void {
+  output.write(`\x1b]52;c;${Buffer.from(paneId).toString("base64")}\x07`);
 }
 
 export async function renderHints(
@@ -258,16 +276,20 @@ async function main(): Promise<void> {
 
     const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
     const key = firstKey ? await firstKey : targets[0].shortcut;
-    const shortcut = keyToShortcut(key);
-    const selected = shortcut === null ? undefined : shortcutMap.get(shortcut);
+    const selection = keyToSelection(key);
+    const selected = selection ? shortcutMap.get(selection.shortcut) : undefined;
 
-    const [focusResult] = await Promise.allSettled([
-      selected ? focusPane(selected.paneId, process.env) : Promise.resolve(),
+    const [selectionResult] = await Promise.allSettled([
+      selected
+        ? selection?.copyPaneId
+          ? Promise.resolve(copyPaneId(selected.paneId))
+          : focusPane(selected.paneId, process.env)
+        : Promise.resolve(),
       clearHints(renderedPaneIds, process.env),
     ]);
     hintsCleared = true;
-    if (focusResult.status === "rejected") {
-      throw focusResult.reason;
+    if (selectionResult.status === "rejected") {
+      throw selectionResult.reason;
     }
   } finally {
     if (!hintsCleared) {

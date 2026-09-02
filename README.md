@@ -4,6 +4,8 @@ Jump directly between visible panes in the active [Herdr](https://github.com/ogu
 
 Herdr EasyMotion overlays each visible pane with a keyboard shortcut, then focuses the selected pane when you press the matching key. It is intended for layouts where directional pane movement is slower than selecting the destination directly.
 
+Hold Shift while pressing a numbered pane shortcut to copy that pane's ID to the clipboard without switching panes.
+
 ![Herdr EasyMotion pane hints demo](assets/herdr-easymotion-pane-hints.png)
 
 ## Installation
