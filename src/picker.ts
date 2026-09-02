@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { readFile, rm } from "node:fs/promises";
-import readline from "node:readline";
 
 import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
 import type { PaneLayout, PaneTarget, Status } from "./core";
@@ -24,7 +23,13 @@ interface RenderHintsOptions {
 
 interface RenderResult {
   paneIds?: string[];
+  layout?: PaneLayout;
   status?: Status;
+}
+
+interface TerminalSession {
+  firstKey: Promise<string> | null;
+  restore: () => void;
 }
 
 function clearScreen(): void {
@@ -57,33 +62,36 @@ export function graphicsDisabledStatus(): Status {
   };
 }
 
-function readKey(): Promise<string> {
+export function readKey(input: NodeJS.ReadableStream = process.stdin): Promise<string> {
   return new Promise((resolve) => {
-    process.stdin.once("data", (chunk: Buffer | string) => resolve(chunk.toString()));
+    input.once("data", (chunk: Buffer | string) => resolve(chunk.toString()));
   });
 }
 
-function setupTerminal(): () => void {
+function setupTerminal(): TerminalSession {
   if (!process.stdin.isTTY) {
-    return () => {};
+    return { firstKey: null, restore: () => {} };
   }
 
-  readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
+  const firstKey = readKey();
   process.stdin.resume();
   hideCursor();
   clearScreen();
 
-  return () => {
-    showCursor();
-    process.stdin.setRawMode(false);
-    process.stdin.pause();
+  return {
+    firstKey,
+    restore: () => {
+      showCursor();
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+    },
   };
 }
 
-async function waitForDismiss(): Promise<void> {
-  if (process.stdin.isTTY) {
-    await readKey();
+async function waitForDismiss(firstKey: Promise<string> | null): Promise<void> {
+  if (firstKey) {
+    await firstKey;
   }
 }
 
@@ -188,8 +196,9 @@ async function waitForRenderResult(filePath: string): Promise<RenderResult> {
 }
 
 async function main(): Promise<void> {
-  const restore = setupTerminal();
+  const { firstKey, restore } = setupTerminal();
   const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
+  let coordinatedLayout: PaneLayout | undefined;
   let hintsCleared = false;
 
   try {
@@ -201,16 +210,18 @@ async function main(): Promise<void> {
       const renderResult = await waitForRenderResult(renderStatusPath);
       renderedPaneIds.push(...(renderResult.paneIds || []));
       startupStatus = renderResult.status || startupStatus;
+      coordinatedLayout = renderResult.layout;
     }
     if (startupStatus.message) {
       renderStatus(startupStatus as Status);
-      await waitForDismiss();
+      await waitForDismiss(firstKey);
       return;
     }
 
     const context = parsePluginContext(process.env.HERDR_PLUGIN_CONTEXT_JSON);
     const sourcePaneId = resolvePaneIdFromContext(context, process.env);
-    const snapshotLayout = parsePluginContext(process.env.HERDR_JUMP_LAYOUT_JSON) as PaneLayout;
+    const snapshotLayout =
+      coordinatedLayout || (parsePluginContext(process.env.HERDR_JUMP_LAYOUT_JSON) as PaneLayout);
     const layout = snapshotLayout.panes ? snapshotLayout : paneLayout(sourcePaneId, process.env);
     const targets = buildTargets(layout, new Map(), sourcePaneId, {
       includeCurrent: true,
@@ -223,7 +234,7 @@ async function main(): Promise<void> {
 
     if (status) {
       renderStatus(status);
-      await waitForDismiss();
+      await waitForDismiss(firstKey);
       return;
     }
 
@@ -239,14 +250,14 @@ async function main(): Promise<void> {
     } catch (error) {
       if (isGraphicsDisabled(error)) {
         renderStatus(graphicsDisabledStatus());
-        await waitForDismiss();
+        await waitForDismiss(firstKey);
         return;
       }
       throw error;
     }
 
     const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
-    const key = process.stdin.isTTY ? await readKey() : targets[0].shortcut;
+    const key = firstKey ? await firstKey : targets[0].shortcut;
     const shortcut = keyToShortcut(key);
     const selected = shortcut === null ? undefined : shortcutMap.get(shortcut);
 

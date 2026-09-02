@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 
 import type { PaneInfo, PaneLayout, PaneListResponse } from "./core";
@@ -59,6 +59,24 @@ export function herdrBin(env: NodeJS.ProcessEnv = process.env): string {
   return env.HERDR_BIN_PATH || "herdr";
 }
 
+function herdrExitError(args: readonly string[], status: number | null, stderr: string): Error {
+  const detail = stderr ? `: ${stderr.trim()}` : "";
+  return new Error(`herdr ${args.join(" ")} failed with exit ${status}${detail}`);
+}
+
+function herdrInvalidJsonError(args: readonly string[], error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`herdr ${args.join(" ")} returned invalid JSON: ${message}`);
+}
+
+function parseHerdrJson<T>(args: readonly string[], stdout: string): T {
+  try {
+    return JSON.parse(stdout) as T;
+  } catch (error) {
+    throw herdrInvalidJsonError(args, error);
+  }
+}
+
 export function requestTimeoutMs(
   options: Pick<HerdrRequestOptions, "timeoutMs"> = {},
   env: NodeJS.ProcessEnv = process.env,
@@ -87,16 +105,49 @@ export function runHerdrJson<T = unknown>(
   }
 
   if (result.status !== 0) {
-    const stderr = result.stderr ? `: ${result.stderr.trim()}` : "";
-    throw new Error(`herdr ${args.join(" ")} failed with exit ${result.status}${stderr}`);
+    throw herdrExitError(args, result.status, result.stderr);
   }
 
-  try {
-    return JSON.parse(result.stdout) as T;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`herdr ${args.join(" ")} returned invalid JSON: ${message}`);
-  }
+  return parseHerdrJson<T>(args, result.stdout);
+}
+
+export function runHerdrJsonAsync<T = unknown>(
+  args: readonly string[],
+  options: HerdrRunOptions = {},
+): Promise<T> {
+  const env = options.env || process.env;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(herdrBin(env), args, {
+      cwd: options.cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status) => {
+      if (status !== 0) {
+        reject(herdrExitError(args, status, stderr));
+        return;
+      }
+
+      try {
+        resolve(parseHerdrJson<T>(args, stdout));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
 }
 
 export function runHerdr(args: readonly string[], options: HerdrRunOptions = {}): string {
@@ -113,8 +164,7 @@ export function runHerdr(args: readonly string[], options: HerdrRunOptions = {})
   }
 
   if (result.status !== 0) {
-    const stderr = result.stderr ? `: ${result.stderr.trim()}` : "";
-    throw new Error(`herdr ${args.join(" ")} failed with exit ${result.status}${stderr}`);
+    throw herdrExitError(args, result.status, result.stderr);
   }
 
   return result.stdout;
@@ -225,23 +275,32 @@ interface PaneLayoutResponse {
   layout?: PaneLayout;
 }
 
-export function paneLayout(
-  paneId?: string | null,
-  env: NodeJS.ProcessEnv = process.env,
-): PaneLayout | undefined {
-  const args = ["pane", "layout"];
-  if (paneId) {
-    args.push("--pane", paneId);
-  } else {
-    args.push("--current");
-  }
-
-  const response = runHerdrJson<PaneLayoutResponse>(args, { env });
+function paneLayoutFromResponse(response: PaneLayoutResponse): PaneLayout | undefined {
   const result = response.result;
   return (
     (result && "layout" in result ? result.layout : undefined) ??
     response.layout ??
     (result as PaneLayout | undefined)
+  );
+}
+
+function paneLayoutArgs(paneId?: string | null): string[] {
+  return paneId ? ["pane", "layout", "--pane", paneId] : ["pane", "layout", "--current"];
+}
+
+export function paneLayout(
+  paneId?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): PaneLayout | undefined {
+  return paneLayoutFromResponse(runHerdrJson<PaneLayoutResponse>(paneLayoutArgs(paneId), { env }));
+}
+
+export async function paneLayoutAsync(
+  paneId?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<PaneLayout | undefined> {
+  return paneLayoutFromResponse(
+    await runHerdrJsonAsync<PaneLayoutResponse>(paneLayoutArgs(paneId), { env }),
   );
 }
 

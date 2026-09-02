@@ -2,8 +2,25 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { PassThrough } = require("node:stream");
 const { HerdrRequestError } = require("../dist/herdr");
-const { graphicsDisabledStatus, isGraphicsDisabled, keyToShortcut } = require("../dist/picker");
+const {
+  graphicsDisabledStatus,
+  isGraphicsDisabled,
+  keyToShortcut,
+  readKey,
+} = require("../dist/picker");
+
+test("readKey buffers input that arrives before rendering finishes", async () => {
+  const input = new PassThrough();
+  const firstKey = readKey(input);
+  input.resume();
+  input.write("1");
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(await firstKey, "1");
+});
 
 test("keyToShortcut handles select and cancel keys", () => {
   assert.equal(keyToShortcut("1"), "1");

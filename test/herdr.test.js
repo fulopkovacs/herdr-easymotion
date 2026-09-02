@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { chmodSync, mkdtempSync, rmSync, writeFileSync } = require("node:fs");
+const { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
 const {
@@ -189,13 +189,16 @@ test("open-picker clears rendered hints when the popup command fails", async () 
   const dir = mkdtempSync(path.join(os.tmpdir(), "herdr-easymotion-"));
   const socketPath = path.join(dir, "herdr.sock");
   const fakeHerdrPath = path.join(dir, "fake-herdr.js");
+  const layoutDonePath = path.join(dir, "layout-done");
   const methods = [];
+  let popupOpenedBeforeLayout = false;
   const server = net.createServer((socket) => {
     socket.setEncoding("utf8");
     socket.once("data", (chunk) => {
       const payload = JSON.parse(chunk.trim());
       methods.push({ method: payload.method, paneId: payload.params.pane_id });
       if (payload.method === "plugin.pane.open") {
+        popupOpenedBeforeLayout = !existsSync(layoutDonePath);
         socket.end(
           JSON.stringify({
             id: payload.id,
@@ -213,7 +216,7 @@ test("open-picker clears rendered hints when the popup command fails", async () 
   });
   writeFileSync(
     fakeHerdrPath,
-    `#!/usr/bin/env node\nconst args = process.argv.slice(2);\nif (args[0] === "pane" && args[1] === "layout") {\n  process.stdout.write(JSON.stringify({ result: { layout: { focused_pane_id: "w1:p1", zoomed: false, panes: [{ pane_id: "w1:p1", rect: { x: 0, y: 0, width: 80, height: 24 } }, { pane_id: "w1:p2", rect: { x: 80, y: 0, width: 80, height: 24 } }] } } }));\n  process.exit(0);\n}\nprocess.stderr.write("open failed");\nprocess.exit(1);\n`,
+    `#!/usr/bin/env node\nconst { writeFileSync } = require("node:fs");\nconst args = process.argv.slice(2);\nif (args[0] === "pane" && args[1] === "layout") {\n  setTimeout(() => {\n    writeFileSync(process.env.TEST_LAYOUT_DONE_PATH, "");\n    process.stdout.write(JSON.stringify({ result: { layout: { focused_pane_id: "w1:p1", zoomed: false, panes: [{ pane_id: "w1:p1", rect: { x: 0, y: 0, width: 80, height: 24 } }, { pane_id: "w1:p2", rect: { x: 80, y: 0, width: 80, height: 24 } }] } } }));\n  }, 50);\n  return;\n}\nprocess.stderr.write("open failed");\nprocess.exit(1);\n`,
   );
   chmodSync(fakeHerdrPath, 0o755);
 
@@ -226,10 +229,12 @@ test("open-picker clears rendered hints when the popup command fails", async () 
       HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ focused_pane_id: "w1:p1" }),
       HERDR_SOCKET_PATH: socketPath,
       HERDR_PLUGIN_STATE_DIR: path.join(dir, "state"),
+      TEST_LAYOUT_DONE_PATH: layoutDonePath,
     });
 
     assert.equal(result.code, 1);
     assert.match(result.stderr, /open failed/);
+    assert.equal(popupOpenedBeforeLayout, true);
     assert.deepEqual(
       methods
         .filter((entry) => entry.method === "pane.graphics.set")
@@ -250,9 +255,19 @@ test("open-picker clears rendered hints when the popup command fails", async () 
   }
 });
 
-test("open-picker does not open a popup when jumping is unavailable", async () => {
+test("open-picker reports unavailable jumping through the early popup", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "herdr-easymotion-"));
+  const socketPath = path.join(dir, "herdr.sock");
   const fakeHerdrPath = path.join(dir, "fake-herdr.js");
+  const methods = [];
+  const server = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    socket.once("data", (chunk) => {
+      const payload = JSON.parse(chunk.trim());
+      methods.push(payload.method);
+      socket.end(JSON.stringify({ id: payload.id, result: { ok: true } }) + "\n");
+    });
+  });
   writeFileSync(
     fakeHerdrPath,
     `#!/usr/bin/env node\nconst args = process.argv.slice(2);\nif (args[0] === "pane" && args[1] === "layout") {\n  process.stdout.write(JSON.stringify({ result: { layout: JSON.parse(process.env.TEST_LAYOUT_JSON) } }));\n  process.exit(0);\n}\nprocess.stderr.write("picker should not open");\nprocess.exit(1);\n`,
@@ -275,19 +290,25 @@ test("open-picker does not open a popup when jumping is unavailable", async () =
     },
   ];
 
+  await listen(server, socketPath);
   try {
     for (const layout of layouts) {
+      methods.length = 0;
       const result = await runNode(path.join(__dirname, "..", "dist", "open-picker.js"), {
         ...process.env,
         HERDR_BIN_PATH: fakeHerdrPath,
         HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ focused_pane_id: "w1:p1" }),
+        HERDR_PLUGIN_STATE_DIR: path.join(dir, "state"),
+        HERDR_SOCKET_PATH: socketPath,
         TEST_LAYOUT_JSON: JSON.stringify(layout),
       });
 
       assert.equal(result.code, 0);
       assert.equal(result.stderr, "");
+      assert.deepEqual(methods, ["plugin.pane.open"]);
     }
   } finally {
+    await close(server);
     rmSync(dir, { recursive: true, force: true });
   }
 });
