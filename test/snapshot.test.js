@@ -123,7 +123,42 @@ test("snapshot controls cannot replay clipboard, graphics, cursor motion, or bel
   assert.equal(rows[0].map((cell) => cell.text).join(""), "safe red");
   const output = renderSnapshot(layout, targets, [{ paneId: "w1:p1", text }], 77, 30, env);
   assert.doesNotMatch(output, /\x1b\]52|\x1b_G|\x1b\[99;99H|\x07|ZXZpbA/);
-  assert.match(output, /\x1b\[31m/);
+  // Snapshot styles are re-emitted after a reset, dimmed, and still red.
+  assert.match(output, /\x1b\[0;2;31m/);
+});
+
+test("SGR sequences are normalized into one current style instead of accumulating", () => {
+  const [row] = snapshotRows("\x1b[1m\x1b[31m\x1b[32m\x1b[44mA\x1b[22;39mB\x1b[0;7mC\x1b[mD");
+  assert.deepEqual(
+    row.map((cell) => cell.style),
+    ["\x1b[1;32;44m", "\x1b[44m", "\x1b[7m", ""],
+  );
+  const [colors] = snapshotRows("\x1b[38;5;196;48:2::1:2:3;4:3mA\x1b[38;5mB\x1b[38;2;9mC");
+  assert.equal(colors[0].style, "\x1b[4:3;38;5;196;48:2::1:2:3m");
+  // Truncated extended colors use 0 for missing components, like terminals do.
+  assert.equal(colors[1].style, "\x1b[4:3;38;5;0;48:2::1:2:3m");
+  assert.equal(colors[2].style, "\x1b[4:3;38;2;9;0;0;48:2::1:2:3m");
+});
+
+test("long colorful snapshots render in bounded output without repainting blank cells", () => {
+  const busy = Array.from({ length: 14 }, () =>
+    Array.from({ length: 37 }, (_, i) => `\x1b[3${i % 8}m\x1b[1m${"x"}`).join(""),
+  ).join("\r\n");
+  const output = renderSnapshot(
+    layout,
+    targets,
+    [{ paneId: "w1:p1", text: busy }, snapshot("w1:p2", " ")],
+    77,
+    30,
+    env,
+  );
+  // Every pane-1 cell changes color, so each costs at most one style switch.
+  assert.ok(output.length < 40_000, `output is ${output.length} bytes`);
+  assert.doesNotMatch(output, /(?:\x1b\[3\dm){2}/);
+  const rows = screen(output, 77, 30);
+  assert.equal(rows[0].slice(0, 3), "xxx");
+  // Pane 2 is blank, so nothing is drawn there except its border and badge.
+  assert.equal(rows[0].slice(41), " ".repeat(36));
 });
 
 test("a closing pane's failed capture still leaves all spatial hints usable", () => {

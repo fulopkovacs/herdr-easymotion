@@ -30,6 +30,7 @@ interface RenderResult {
   snapshots?: PaneSnapshot[];
   layout?: PaneLayout;
   status?: Status;
+  appearance?: "light" | "dark";
 }
 
 interface TerminalSession {
@@ -241,6 +242,7 @@ async function main(): Promise<void> {
   const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
   let coordinatedLayout: PaneLayout | undefined;
   let coordinatedSnapshots: PaneSnapshot[] | undefined;
+  let renderEnv = process.env;
   let hintsCleared = false;
   let active = true;
   let resizeGeneration = 0;
@@ -258,6 +260,9 @@ async function main(): Promise<void> {
       startupStatus = renderResult.status || startupStatus;
       coordinatedLayout = renderResult.layout;
       coordinatedSnapshots = renderResult.snapshots;
+      if (renderResult.appearance && !process.env.HERDR_EASYMOTION_APPEARANCE) {
+        renderEnv = { ...process.env, HERDR_EASYMOTION_APPEARANCE: renderResult.appearance };
+      }
     }
     if (startupStatus.message) {
       renderStatus(startupStatus as Status);
@@ -299,6 +304,7 @@ async function main(): Promise<void> {
             Math.max(1, ...targets.map((target) => target.rect.x + target.rect.width)) - 3,
           process.stdout.rows ||
             Math.max(1, ...targets.map((target) => target.rect.y + target.rect.height)) - 2,
+          renderEnv,
         ),
       );
     };

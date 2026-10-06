@@ -23,8 +23,153 @@ interface Rect {
   height: number;
 }
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+interface SgrState {
+  bold: boolean;
+  dim: boolean;
+  italic: boolean;
+  underline: string;
+  blink: string;
+  inverse: boolean;
+  hidden: boolean;
+  strike: boolean;
+  overline: boolean;
+  fg: string;
+  bg: string;
+  underlineColor: string;
+}
+
+interface StyleInfo {
+  dimmed: string;
+  // A space in this style looks exactly like a cleared default cell.
+  blankInvisible: boolean;
+}
+
 const RESET = "\x1b[0m";
+// Every code point in these ranges is a grapheme on its own (none extend, join,
+// or prepend), so such text can skip Intl.Segmenter, whose ICU data costs ~10ms
+// to load on startup.
+const SIMPLE_TEXT = /^[\t\x20-\x7e\xa0-\u02ff\u2190-\u23ff\u2500-\u27bf\ue000-\uf8ff]*$/;
+let segmenter: Intl.Segmenter | undefined;
+const widthCache = new Map<string, number>();
+const styleCache = new Map<string, StyleInfo>();
+
+function* segmentGraphemes(text: string): Generator<string> {
+  segmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  for (const { segment } of segmenter.segment(text)) yield segment;
+}
+
+function graphemes(text: string): Iterable<string> {
+  return SIMPLE_TEXT.test(text) ? text : segmentGraphemes(text);
+}
+
+function emptySgr(): SgrState {
+  return {
+    bold: false,
+    dim: false,
+    italic: false,
+    underline: "",
+    blink: "",
+    inverse: false,
+    hidden: false,
+    strike: false,
+    overline: false,
+    fg: "",
+    bg: "",
+    underlineColor: "",
+  };
+}
+
+// Apply one SGR parameter string the way a terminal would. Styles are kept as
+// state rather than concatenated escapes, so long colorful lines cannot grow a
+// cell's style (and the rendered output) without bound.
+function applySgr(state: SgrState, params: string): void {
+  const tokens = params.split(";");
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.includes(":")) {
+      const [head, sub] = token.split(":");
+      if (head === "38") state.fg = token;
+      else if (head === "48") state.bg = token;
+      else if (head === "58") state.underlineColor = token;
+      else if (head === "4") state.underline = sub === "0" ? "" : token;
+      continue;
+    }
+    const code = Number(token);
+    if (code === 38 || code === 48 || code === 58) {
+      const mode = Number(tokens[i + 1]);
+      const count = mode === 5 ? 1 : mode === 2 ? 3 : -1;
+      if (count === -1) return;
+      // Like common terminals, missing color components default to 0.
+      const components = Array.from({ length: count }, (_, k) => Number(tokens[i + 2 + k] ?? 0));
+      const color = [code, mode, ...components].join(";");
+      i += 1 + count;
+      if (code === 38) state.fg = color;
+      else if (code === 48) state.bg = color;
+      else state.underlineColor = color;
+      continue;
+    }
+    if (code === 0) Object.assign(state, emptySgr());
+    else if (code === 1) state.bold = true;
+    else if (code === 2) state.dim = true;
+    else if (code === 3) state.italic = true;
+    else if (code === 4 || code === 21) state.underline = String(code);
+    else if (code === 5 || code === 6) state.blink = String(code);
+    else if (code === 7) state.inverse = true;
+    else if (code === 8) state.hidden = true;
+    else if (code === 9) state.strike = true;
+    else if (code === 22) state.bold = state.dim = false;
+    else if (code === 23) state.italic = false;
+    else if (code === 24) state.underline = "";
+    else if (code === 25) state.blink = "";
+    else if (code === 27) state.inverse = false;
+    else if (code === 28) state.hidden = false;
+    else if (code === 29) state.strike = false;
+    else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) state.fg = token;
+    else if (code === 39) state.fg = "";
+    else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) state.bg = token;
+    else if (code === 49) state.bg = "";
+    else if (code === 53) state.overline = true;
+    else if (code === 55) state.overline = false;
+    else if (code === 59) state.underlineColor = "";
+  }
+}
+
+function sgrStyle(state: SgrState): string {
+  const params = [
+    state.bold && "1",
+    state.dim && "2",
+    state.italic && "3",
+    state.underline,
+    state.blink,
+    state.inverse && "7",
+    state.hidden && "8",
+    state.strike && "9",
+    state.overline && "53",
+    state.fg,
+    state.bg,
+    state.underlineColor,
+  ].filter(Boolean);
+  return params.length ? `\x1b[${params.join(";")}m` : "";
+}
+
+function styleInfo(style: string): StyleInfo {
+  let info = styleCache.get(style);
+  if (!info) {
+    const state = emptySgr();
+    applySgr(state, style.slice(2, -1));
+    const blankInvisible = !(
+      state.underline ||
+      state.inverse ||
+      state.strike ||
+      state.overline ||
+      state.bg
+    );
+    state.dim = true;
+    info = { dimmed: sgrStyle(state), blankInvisible };
+    styleCache.set(style, info);
+  }
+  return info;
+}
 
 function scaleHint(lines: readonly string[], scale: number): string[] {
   if (scale === 1) return [...lines];
@@ -80,6 +225,19 @@ export async function captureSnapshots(
 }
 
 function cellWidth(text: string): number {
+  // Latin text, borders, and FIGlet blocks are always one cell wide.
+  const first = text.charCodeAt(0);
+  if (text.length === 1 && (first < 0x300 || (first >= 0x2500 && first <= 0x259f))) return 1;
+  let width = widthCache.get(text);
+  if (width === undefined) {
+    width = uncachedCellWidth(text);
+    if (widthCache.size > 4096) widthCache.clear();
+    widthCache.set(text, width);
+  }
+  return width;
+}
+
+function uncachedCellWidth(text: string): number {
   const code = text.codePointAt(0) || 0;
   if (/^(?:\p{Mark}|\u200d|\ufe0f)+$/u.test(text)) return 0;
   if (/\p{Emoji_Presentation}|\ufe0f/u.test(text)) return 2;
@@ -108,21 +266,29 @@ export function snapshotRows(text: string): Cell[][] {
       (sequence) => (/^\x1b\[[\d;:]*m$/.test(sequence) ? sequence : ""),
     )
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f-\x9f]/g, "");
+  const state = emptySgr();
   let style = "";
   const lines = safe.split(/\r?\n/);
   if (lines.length > 1 && lines.at(-1) === "") lines.pop();
   return lines.map((line) => {
     const cells: Cell[] = [];
     // SGR escapes survived sanitizing above; all other text is printable.
-    for (const part of line.split(/(\x1b\[[\d;:]*m)/)) {
-      if (/^\x1b\[[\d;:]*m$/.test(part)) {
-        style = /^\x1b\[(?:0(?:;|m)|m)/.test(part) ? part : style + part;
+    const parts = line.split(/\x1b\[([\d;:]*)m/);
+    for (let index = 0; index < parts.length; index++) {
+      // Odd indexes are the captured SGR parameters between text parts.
+      if (index % 2 === 1) {
+        applySgr(state, parts[index]);
+        style = sgrStyle(state);
         continue;
       }
-      for (const { segment } of segmenter.segment(part.replace(/[\r\x1b]/g, ""))) {
+      const part = parts[index].replace(/[\r\x1b]/g, "");
+      if (!part) continue;
+      let space: Cell | undefined;
+      for (const segment of graphemes(part)) {
         if (segment === "\t") {
+          space ??= { text: " ", style, width: 1 };
           const spaces = 8 - (cells.length % 8);
-          for (let i = 0; i < spaces; i++) cells.push({ text: " ", style, width: 1 });
+          for (let i = 0; i < spaces; i++) cells.push(space);
           continue;
         }
         const width = cellWidth(segment);
@@ -133,6 +299,13 @@ export function snapshotRows(text: string): Cell[][] {
     }
     return cells;
   });
+}
+
+// Much faster than Array.from for the viewport-sized grids built per frame.
+function filledArray<T>(length: number, value: T): T[] {
+  const array: T[] = [];
+  for (let i = 0; i < length; i++) array.push(value);
+  return array;
 }
 
 function layoutArea(layout: PaneLayout, targets: readonly PaneTarget[]): Rect {
@@ -163,29 +336,35 @@ export function renderSnapshot(
   const width = Math.max(1, Math.min(4096, Math.floor(columns) || 1));
   const height = Math.max(1, Math.min(4096, Math.floor(rows) || 1));
   if (width * height > 1_000_000) throw new Error("Snapshot viewport is too large");
-  const grid: Cell[][] = Array.from({ length: height }, () =>
-    Array.from({ length: width }, () => ({ text: " ", style: "", width: 1 })),
-  );
+  // Flat parallel arrays avoid allocating an object for every viewport cell.
+  const texts = filledArray(width * height, " ");
+  const styles = filledArray(width * height, "");
+  const widths = new Uint8Array(width * height).fill(1);
   const area = layoutArea(layout, targets);
   // A 100% popup shares the tab's outer rectangle. Its content begins one
   // cell inside that rectangle; the right scrollbar gutter is simply cropped.
   const originX = area.x + 1;
   const originY = area.y + 1;
-  const put = (x: number, y: number, cell: Cell): void => {
-    if (x < 0 || y < 0 || y >= height || x + cell.width > width || cell.width === 0) return;
-    const row = grid[y];
-    if (row[x].width === 0 && x > 0) row[x - 1] = { text: " ", style: "", width: 1 };
-    if (row[x].width === 2 && x + 1 < width) row[x + 1] = { text: " ", style: "", width: 1 };
-    if (cell.width === 2 && row[x + 1].width === 2 && x + 2 < width) {
-      row[x + 2] = { text: " ", style: "", width: 1 };
+  const set = (index: number, text: string, style: string, cellWidth: number): void => {
+    texts[index] = text;
+    styles[index] = style;
+    widths[index] = cellWidth;
+  };
+  const put = (x: number, y: number, text: string, style: string, cellWidth: number): void => {
+    if (x < 0 || y < 0 || y >= height || x + cellWidth > width || cellWidth === 0) return;
+    const index = y * width + x;
+    if (widths[index] === 0 && x > 0) set(index - 1, " ", "", 1);
+    if (widths[index] === 2 && x + 1 < width) set(index + 1, " ", "", 1);
+    if (cellWidth === 2 && widths[index + 1] === 2 && x + 2 < width) {
+      set(index + 2, " ", "", 1);
     }
-    row[x] = cell;
-    if (cell.width === 2) row[x + 1] = { text: "", style: cell.style, width: 0 };
+    set(index, text, style, cellWidth);
+    if (cellWidth === 2) set(index + 1, "", style, 0);
   };
   const writeText = (x: number, y: number, text: string, style: string): void => {
-    for (const { segment } of segmenter.segment(text)) {
+    for (const segment of graphemes(text)) {
       const width = cellWidth(segment);
-      put(x, y, { text: segment, style, width });
+      put(x, y, segment, style, width);
       x += width;
     }
   };
@@ -203,7 +382,8 @@ export function renderSnapshot(
       for (let x = 0; x < Math.min(content[y].length, target.rect.width - insetX); x++) {
         const cell = content[y][x];
         if (x + cell.width > target.rect.width - insetX) continue;
-        put(paneX + insetX + x, paneY + insetY + y, { ...cell, style: cell.style + "\x1b[2m" });
+        const style = styleInfo(cell.style).dimmed;
+        put(paneX + insetX + x, paneY + insetY + y, cell.text, style, cell.width);
       }
     }
     const rect = {
@@ -267,17 +447,31 @@ export function renderSnapshot(
     }
   });
 
-  const output = ["\x1b[?7l", RESET, "\x1b[2J\x1b[H"];
+  // The screen is cleared first, so cells that would look like cleared cells
+  // are skipped with cursor jumps instead of being repainted.
+  const output = ["\x1b[?7l", RESET, "\x1b[2J"];
+  let current = "";
   for (let y = 0; y < height; y++) {
-    output.push(`\x1b[${y + 1};1H`, RESET);
-    let previousStyle = "";
-    for (const cell of grid[y]) {
-      if (cell.width === 0) continue;
-      if (cell.style !== previousStyle) {
-        output.push(RESET, cell.style);
-        previousStyle = cell.style;
+    let cursor = -1;
+    for (let x = 0; x < width; x++) {
+      const index = y * width + x;
+      const cellWidth = widths[index];
+      const style = styles[index];
+      if (cellWidth === 0 || (texts[index] === " " && styleInfo(style).blankInvisible)) continue;
+      if (cursor !== x) {
+        // Short gaps are cheaper as spaces when the active style keeps them invisible.
+        output.push(
+          cursor !== -1 && x - cursor <= 8 && styleInfo(current).blankInvisible
+            ? " ".repeat(x - cursor)
+            : `\x1b[${y + 1};${x + 1}H`,
+        );
       }
-      output.push(cell.text);
+      if (style !== current) {
+        output.push(style ? `\x1b[0;${style.slice(2)}` : RESET);
+        current = style;
+      }
+      output.push(texts[index]);
+      cursor = x + cellWidth;
     }
   }
   output.push(RESET, "\x1b[?7h", "\x1b[H");

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { deflateSync } from "node:zlib";
@@ -84,7 +84,13 @@ function positiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-export function backgroundForEnv(env: NodeJS.ProcessEnv = process.env): Color {
+interface AppearanceCache {
+  appearancePath: string;
+  preferenceMtimeMs: number | null;
+  dark: boolean | null;
+}
+
+function explicitBackground(env: NodeJS.ProcessEnv): Color | null {
   const appearance = env.HERDR_EASYMOTION_APPEARANCE?.toLowerCase();
   if (appearance === "light") {
     return LIGHT_BACKGROUND;
@@ -92,58 +98,112 @@ export function backgroundForEnv(env: NodeJS.ProcessEnv = process.env): Color {
   if (appearance === "dark") {
     return DARK_BACKGROUND;
   }
+  return null;
+}
+
+function readAppearanceCache(env: NodeJS.ProcessEnv): AppearanceCache {
+  const preferencesPath = path.join(
+    env.HOME || process.env.HOME || "",
+    "Library",
+    "Preferences",
+    ".GlobalPreferences.plist",
+  );
+  const cache: AppearanceCache = {
+    appearancePath: path.join(cacheDir(env), "graphics", "appearance.json"),
+    preferenceMtimeMs: null,
+    dark: null,
+  };
+
+  try {
+    cache.preferenceMtimeMs = statSync(preferencesPath).mtimeMs;
+    const cached: unknown = JSON.parse(readFileSync(cache.appearancePath, "utf8"));
+    if (
+      cached !== null &&
+      typeof cached === "object" &&
+      "preference_mtime_ms" in cached &&
+      "dark" in cached &&
+      cached.preference_mtime_ms === cache.preferenceMtimeMs &&
+      typeof cached.dark === "boolean"
+    ) {
+      cache.dark = cached.dark;
+    }
+  } catch {
+    // Detect and cache the appearance instead.
+  }
+  return cache;
+}
+
+function storeAppearance(cache: AppearanceCache, dark: boolean): Color {
+  systemBackground = dark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+  if (cache.dark === null) {
+    try {
+      mkdirSync(path.dirname(cache.appearancePath), { recursive: true });
+      writeFileSync(
+        cache.appearancePath,
+        JSON.stringify({ preference_mtime_ms: cache.preferenceMtimeMs, dark }),
+      );
+    } catch {
+      // Appearance caching is an optimization only.
+    }
+  }
+  return systemBackground;
+}
+
+export function backgroundForEnv(env: NodeJS.ProcessEnv = process.env): Color {
+  const explicit = explicitBackground(env);
+  if (explicit) {
+    return explicit;
+  }
   if (systemBackground) {
     return systemBackground;
   }
 
   if (process.platform === "darwin") {
-    const preferencesPath = path.join(
-      env.HOME || process.env.HOME || "",
-      "Library",
-      "Preferences",
-      ".GlobalPreferences.plist",
-    );
-    const appearancePath = path.join(cacheDir(env), "graphics", "appearance.json");
-    let preferenceMtimeMs: number | null = null;
-
-    try {
-      preferenceMtimeMs = statSync(preferencesPath).mtimeMs;
-      const cached: unknown = JSON.parse(readFileSync(appearancePath, "utf8"));
-      if (
-        cached !== null &&
-        typeof cached === "object" &&
-        "preference_mtime_ms" in cached &&
-        "dark" in cached &&
-        cached.preference_mtime_ms === preferenceMtimeMs &&
-        typeof cached.dark === "boolean"
-      ) {
-        systemBackground = cached.dark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-        return systemBackground;
-      }
-    } catch {
-      // Detect and cache the appearance below.
+    const cache = readAppearanceCache(env);
+    if (cache.dark !== null) {
+      return storeAppearance(cache, cache.dark);
     }
 
     const result = spawnSync("defaults", ["read", "-g", "AppleInterfaceStyle"], {
       encoding: "utf8",
       env: { ...process.env, ...env },
     });
-    const dark = result.status === 0 && result.stdout.trim().toLowerCase() === "dark";
-    systemBackground = dark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
-    try {
-      mkdirSync(path.dirname(appearancePath), { recursive: true });
-      writeFileSync(
-        appearancePath,
-        JSON.stringify({ preference_mtime_ms: preferenceMtimeMs, dark }),
-      );
-    } catch {
-      // Appearance caching is an optimization only.
-    }
-    return systemBackground;
+    return storeAppearance(
+      cache,
+      result.status === 0 && result.stdout.trim().toLowerCase() === "dark",
+    );
   }
 
   systemBackground = DARK_BACKGROUND;
   return systemBackground;
+}
+
+// Resolves the same appearance as backgroundForEnv without blocking the event
+// loop, so the launcher can detect it while other startup work is in flight.
+export async function appearanceForEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<"light" | "dark"> {
+  let background = explicitBackground(env) || systemBackground;
+  if (!background && process.platform === "darwin") {
+    const cache = readAppearanceCache(env);
+    let dark = cache.dark;
+    if (dark === null) {
+      dark = await new Promise<boolean>((resolve, reject) => {
+        execFile(
+          "defaults",
+          ["read", "-g", "AppleInterfaceStyle"],
+          { encoding: "utf8", env: { ...process.env, ...env }, timeout: 2000 },
+          (error, stdout) => {
+            // `defaults` exits non-zero when no dark style is set.
+            if (error && typeof error.code !== "number") reject(error);
+            else resolve(!error && stdout.trim().toLowerCase() === "dark");
+          },
+        );
+      });
+    }
+    background = storeAppearance(cache, dark);
+  }
+  return background === LIGHT_BACKGROUND ? "light" : "dark";
 }
 
 export function paneIdBackgroundForEnv(env: NodeJS.ProcessEnv = process.env): Color {

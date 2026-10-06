@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
 import type { PaneLayout, Status } from "./core";
+import { appearanceForEnv } from "./graphics";
 import { openPluginPane, paneLayoutAsync } from "./herdr";
 import { captureSnapshots } from "./snapshot";
 import type { PaneSnapshot } from "./snapshot";
@@ -14,6 +15,7 @@ interface RenderResult {
   snapshots?: PaneSnapshot[];
   layout?: PaneLayout;
   status?: Status;
+  appearance?: "light" | "dark";
 }
 
 function renderStatusPath(env: NodeJS.ProcessEnv): string {
@@ -58,6 +60,9 @@ async function main(): Promise<void> {
     () => null,
     (error: unknown) => error,
   );
+  // Detecting the system appearance can spawn `defaults`; doing it here, while
+  // the popup starts, keeps that off the picker's path to its first frame.
+  const appearancePromise = appearanceForEnv(env).catch(() => undefined);
   const renderPromise = paneLayoutAsync(sourcePaneId, env)
     .then(async (layout): Promise<RenderResult> => {
       const targets = buildTargets(layout, new Map(), sourcePaneId, {
@@ -95,8 +100,8 @@ async function main(): Promise<void> {
         detail: error instanceof Error ? error.message : String(error),
       },
     }))
-    .then((result) => {
-      writeRenderResult(statusPath, result);
+    .then(async (result) => {
+      writeRenderResult(statusPath, { ...result, appearance: await appearancePromise });
       return result;
     });
 

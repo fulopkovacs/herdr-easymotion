@@ -169,6 +169,7 @@ async function main() {
     const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
     let coordinatedLayout;
     let coordinatedSnapshots;
+    let renderEnv = process.env;
     let hintsCleared = false;
     let active = true;
     let resizeGeneration = 0;
@@ -183,6 +184,9 @@ async function main() {
             startupStatus = renderResult.status || startupStatus;
             coordinatedLayout = renderResult.layout;
             coordinatedSnapshots = renderResult.snapshots;
+            if (renderResult.appearance && !process.env.HERDR_EASYMOTION_APPEARANCE) {
+                renderEnv = { ...process.env, HERDR_EASYMOTION_APPEARANCE: renderResult.appearance };
+            }
         }
         if (startupStatus.message) {
             renderStatus(startupStatus);
@@ -205,7 +209,7 @@ async function main() {
         const drawSnapshot = (currentLayout, currentTargets, snapshots) => {
             process.stdout.write((0, snapshot_1.renderSnapshot)(currentLayout, currentTargets, snapshots, process.stdout.columns ||
                 Math.max(1, ...targets.map((target) => target.rect.x + target.rect.width)) - 3, process.stdout.rows ||
-                Math.max(1, ...targets.map((target) => target.rect.y + target.rect.height)) - 2));
+                Math.max(1, ...targets.map((target) => target.rect.y + target.rect.height)) - 2, renderEnv));
         };
         drawSnapshot(layout, targets, coordinatedSnapshots || (await (0, snapshot_1.captureSnapshots)(targets)));
         onResize = () => {

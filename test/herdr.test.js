@@ -18,6 +18,7 @@ const { spawn } = require("node:child_process");
 const {
   MAX_TIMEOUT_MS,
   paneGraphicsSetMany,
+  paneLayoutAsync,
   request,
   requestTimeoutMs,
   settleRequests,
@@ -106,6 +107,7 @@ test("snapshot picker survives launcher handoff and selects without graphics API
     const handoff = JSON.parse(readFileSync(popupEnv.HERDR_JUMP_RENDER_STATUS_PATH, "utf8"));
     assert.equal(handoff.snapshots.length, 2);
     assert.equal(handoff.status, undefined);
+    assert.match(handoff.appearance, /^(?:light|dark)$/);
     const picker = await runNode(path.join(__dirname, "../dist/picker.js"), {
       ...env,
       ...popupEnv,
@@ -345,17 +347,23 @@ test("open-picker reports unavailable jumping through the early popup", async ()
   const socketPath = path.join(dir, "herdr.sock");
   const fakeHerdrPath = path.join(dir, "fake-herdr.js");
   const methods = [];
+  let currentLayout;
   const server = net.createServer((socket) => {
     socket.setEncoding("utf8");
     socket.once("data", (chunk) => {
       const payload = JSON.parse(chunk.trim());
       methods.push(payload.method);
-      socket.end(JSON.stringify({ id: payload.id, result: { ok: true } }) + "\n");
+      const result =
+        payload.method === "pane.layout"
+          ? { type: "pane_layout", layout: currentLayout }
+          : { ok: true };
+      socket.end(JSON.stringify({ id: payload.id, result }) + "\n");
     });
   });
   writeFileSync(
     fakeHerdrPath,
-    `#!/usr/bin/env node\nconst args = process.argv.slice(2);\nif (args[0] === "pane" && args[1] === "layout") {\n  process.stdout.write(JSON.stringify({ result: { layout: JSON.parse(process.env.TEST_LAYOUT_JSON) } }));\n  process.exit(0);\n}\nprocess.stderr.write("picker should not open");\nprocess.exit(1);\n`,
+    // The layout comes from the socket API, so the CLI must not be spawned.
+    `#!/usr/bin/env node\nprocess.stderr.write("herdr CLI should not run");\nprocess.exit(1);\n`,
   );
   chmodSync(fakeHerdrPath, 0o755);
 
@@ -379,18 +387,18 @@ test("open-picker reports unavailable jumping through the early popup", async ()
   try {
     for (const layout of layouts) {
       methods.length = 0;
+      currentLayout = layout;
       const result = await runNode(path.join(__dirname, "..", "dist", "open-picker.js"), {
         ...process.env,
         HERDR_BIN_PATH: fakeHerdrPath,
         HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ focused_pane_id: "w1:p1" }),
         HERDR_PLUGIN_STATE_DIR: path.join(dir, "state"),
         HERDR_SOCKET_PATH: socketPath,
-        TEST_LAYOUT_JSON: JSON.stringify(layout),
       });
 
       assert.equal(result.code, 0);
       assert.equal(result.stderr, "");
-      assert.deepEqual(methods, ["plugin.pane.open"]);
+      assert.deepEqual(methods.sort(), ["pane.layout", "plugin.pane.open"]);
     }
   } finally {
     await close(server);
@@ -448,6 +456,94 @@ test("picker focuses the selection and clears hints without a finish process", a
         `${left.method}:${left.paneId}`.localeCompare(`${right.method}:${right.paneId}`),
       ),
     );
+  } finally {
+    await close(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("pane layout prefers the socket API and falls back to the CLI", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "herdr-easymotion-"));
+  const socketPath = path.join(dir, "herdr.sock");
+  const fakeHerdrPath = path.join(dir, "fake-herdr.js");
+  const cliMarkerPath = path.join(dir, "cli-ran");
+  const socketLayout = { focused_pane_id: "w1:p1", panes: [{ pane_id: "w1:p1" }] };
+  const cliLayout = { focused_pane_id: "w1:p1", panes: [{ pane_id: "w1:p2" }] };
+  let socketResponse;
+  const requests = [];
+  const server = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    socket.once("data", (chunk) => {
+      const payload = JSON.parse(chunk.trim());
+      requests.push(payload);
+      socket.end(JSON.stringify({ id: payload.id, ...socketResponse }) + "\n");
+    });
+  });
+  writeFileSync(
+    fakeHerdrPath,
+    `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(cliMarkerPath)}, process.argv.slice(2).join(" "));\nconsole.log(${JSON.stringify(JSON.stringify({ result: { layout: cliLayout } }))});\n`,
+  );
+  chmodSync(fakeHerdrPath, 0o755);
+  const env = { ...process.env, HERDR_BIN_PATH: fakeHerdrPath, HERDR_SOCKET_PATH: socketPath };
+
+  await listen(server, socketPath);
+  try {
+    socketResponse = { result: { type: "pane_layout", layout: socketLayout } };
+    assert.deepEqual(await paneLayoutAsync("w1:p1", env), socketLayout);
+    assert.deepEqual(requests.at(-1).params, { pane_id: "w1:p1" });
+    assert.equal(requests.at(-1).method, "pane.layout");
+    assert.equal(existsSync(cliMarkerPath), false);
+
+    socketResponse = { error: { code: "unknown_method", message: "unknown method" } };
+    assert.deepEqual(await paneLayoutAsync("w1:p1", env), cliLayout);
+    assert.equal(readFileSync(cliMarkerPath, "utf8"), "pane layout --pane w1:p1");
+  } finally {
+    await close(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("picker draws with the appearance detected by the launcher", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "herdr-easymotion-"));
+  const socketPath = path.join(dir, "herdr.sock");
+  const server = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    socket.once("data", (chunk) => {
+      const payload = JSON.parse(chunk.trim());
+      socket.end(JSON.stringify({ id: payload.id, result: { type: "ok" } }) + "\n");
+    });
+  });
+  const layout = {
+    focused_pane_id: "w1:p1",
+    panes: [
+      { pane_id: "w1:p1", rect: { x: 0, y: 0, width: 40, height: 20 } },
+      { pane_id: "w1:p2", rect: { x: 40, y: 0, width: 40, height: 20 } },
+    ],
+  };
+
+  await listen(server, socketPath);
+  try {
+    for (const [appearance, background] of [
+      ["light", "48;2;251;241;199"],
+      ["dark", "48;2;29;32;33"],
+    ]) {
+      const handoffPath = path.join(dir, `render-${appearance}.json`);
+      writeFileSync(handoffPath, JSON.stringify({ layout, snapshots: [], appearance }), {
+        mode: 0o600,
+      });
+      const env = {
+        ...process.env,
+        HERDR_SOCKET_PATH: socketPath,
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_PLUGIN_CONTEXT_JSON: "{}",
+        HERDR_PLUGIN_CACHE_DIR: dir,
+        HERDR_JUMP_RENDER_STATUS_PATH: handoffPath,
+      };
+      delete env.HERDR_EASYMOTION_APPEARANCE;
+      const picker = await runNode(path.join(__dirname, "../dist/picker.js"), env);
+      assert.equal(picker.code, 0, picker.stderr);
+      assert.ok(picker.stdout.includes(background), `${appearance} background missing`);
+    }
   } finally {
     await close(server);
     rmSync(dir, { recursive: true, force: true });

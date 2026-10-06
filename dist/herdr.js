@@ -218,6 +218,19 @@ function paneLayout(paneId, env = process.env) {
     return paneLayoutFromResponse(runHerdrJson(paneLayoutArgs(paneId), { env }));
 }
 async function paneLayoutAsync(paneId, env = process.env) {
+    // The socket API avoids spawning the herdr CLI (~20ms) on the picker's critical path.
+    if (paneId && env.HERDR_SOCKET_PATH) {
+        try {
+            const response = await request("pane.layout", { pane_id: paneId }, { env });
+            const layout = response.result?.layout;
+            if (layout && typeof layout === "object" && Array.isArray(layout.panes)) {
+                return layout;
+            }
+        }
+        catch {
+            // Fall back to the CLI, which also works where the socket method is unavailable.
+        }
+    }
     return paneLayoutFromResponse(await runHerdrJsonAsync(paneLayoutArgs(paneId), { env }));
 }
 function paneList(env = process.env) {

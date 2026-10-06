@@ -8,6 +8,7 @@ const node_fs_1 = require("node:fs");
 const node_os_1 = __importDefault(require("node:os"));
 const node_path_1 = __importDefault(require("node:path"));
 const core_1 = require("./core");
+const graphics_1 = require("./graphics");
 const herdr_1 = require("./herdr");
 const snapshot_1 = require("./snapshot");
 function renderStatusPath(env) {
@@ -43,6 +44,9 @@ async function main() {
         env: paneEnv,
         focus: true,
     }, env).then(() => null, (error) => error);
+    // Detecting the system appearance can spawn `defaults`; doing it here, while
+    // the popup starts, keeps that off the picker's path to its first frame.
+    const appearancePromise = (0, graphics_1.appearanceForEnv)(env).catch(() => undefined);
     const renderPromise = (0, herdr_1.paneLayoutAsync)(sourcePaneId, env)
         .then(async (layout) => {
         const targets = (0, core_1.buildTargets)(layout, new Map(), sourcePaneId, {
@@ -76,8 +80,8 @@ async function main() {
             detail: error instanceof Error ? error.message : String(error),
         },
     }))
-        .then((result) => {
-        writeRenderResult(statusPath, result);
+        .then(async (result) => {
+        writeRenderResult(statusPath, { ...result, appearance: await appearancePromise });
         return result;
     });
     const [openError] = await Promise.all([openPromise, renderPromise]);
