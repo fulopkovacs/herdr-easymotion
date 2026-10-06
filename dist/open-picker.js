@@ -9,7 +9,7 @@ const node_os_1 = __importDefault(require("node:os"));
 const node_path_1 = __importDefault(require("node:path"));
 const core_1 = require("./core");
 const herdr_1 = require("./herdr");
-const picker_1 = require("./picker");
+const snapshot_1 = require("./snapshot");
 function renderStatusPath(env) {
     const directory = env.HERDR_PLUGIN_STATE_DIR || env.TMPDIR || node_os_1.default.tmpdir();
     (0, node_fs_1.mkdirSync)(directory, { recursive: true });
@@ -17,7 +17,8 @@ function renderStatusPath(env) {
 }
 function writeRenderResult(filePath, result) {
     const temporaryPath = `${filePath}.tmp`;
-    (0, node_fs_1.writeFileSync)(temporaryPath, JSON.stringify(result));
+    // Snapshots can contain credentials or other private terminal contents.
+    (0, node_fs_1.writeFileSync)(temporaryPath, JSON.stringify(result), { mode: 0o600, flag: "wx" });
     (0, node_fs_1.renameSync)(temporaryPath, filePath);
 }
 async function main() {
@@ -37,8 +38,8 @@ async function main() {
         plugin_id: pluginId,
         entrypoint: "picker",
         placement: "popup",
-        width: "80%",
-        height: "80%",
+        width: "100%",
+        height: "100%",
         env: paneEnv,
         focus: true,
     }, env).then(() => null, (error) => error);
@@ -54,7 +55,7 @@ async function main() {
         try {
             return {
                 layout,
-                ...(await (0, picker_1.renderPickerHints)(targets, { env, sourcePaneId })),
+                snapshots: await (0, snapshot_1.captureSnapshots)(targets, env),
             };
         }
         catch (error) {
@@ -79,9 +80,8 @@ async function main() {
         writeRenderResult(statusPath, result);
         return result;
     });
-    const [openError, result] = await Promise.all([openPromise, renderPromise]);
+    const [openError] = await Promise.all([openPromise, renderPromise]);
     if (openError) {
-        await (0, picker_1.clearHints)(result.paneIds || [], env);
         (0, node_fs_1.rmSync)(statusPath, { force: true });
         (0, node_fs_1.rmSync)(`${statusPath}.tmp`, { force: true });
         throw openError;

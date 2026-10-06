@@ -13,7 +13,10 @@ import {
   paneGraphicsInfo,
   paneGraphicsSetMany,
   paneLayout,
+  paneLayoutAsync,
 } from "./herdr";
+import { captureSnapshots, renderSnapshot } from "./snapshot";
+import type { PaneSnapshot } from "./snapshot";
 
 interface RenderHintsOptions {
   env?: NodeJS.ProcessEnv;
@@ -24,6 +27,7 @@ interface RenderHintsOptions {
 interface RenderResult {
   paneIds?: string[];
   textPicker?: boolean;
+  snapshots?: PaneSnapshot[];
   layout?: PaneLayout;
   status?: Status;
 }
@@ -90,6 +94,7 @@ function setupTerminal(): TerminalSession {
   return {
     firstKey,
     restore: () => {
+      process.stdout.write("\x1b[0m\x1b[?7h");
       showCursor();
       process.stdin.setRawMode(false);
       process.stdin.pause();
@@ -195,20 +200,6 @@ export async function renderPickerHints(
   }
 }
 
-export function formatTextPicker(targets: readonly PaneTarget[]): string {
-  return [
-    "Jump to pane",
-    "",
-    ...targets.map(
-      (target) =>
-        `${target.shortcut}  ${target.paneId}${target.focused ? " (current)" : ""}  [${target.rect.x},${target.rect.y}]`,
-    ),
-    "",
-    "Press a shortcut to jump; Shift+number copies the pane ID.",
-    "Esc or q cancels. Positions are column,row in the tab.",
-  ].join("\r\n");
-}
-
 function parseJsonArray(value: string | undefined): string[] {
   const parsed = parsePluginContext(value);
   return (Array.isArray(parsed) ? parsed : []) as string[];
@@ -249,8 +240,12 @@ async function main(): Promise<void> {
   const { firstKey, restore } = setupTerminal();
   const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
   let coordinatedLayout: PaneLayout | undefined;
-  let textPicker = false;
+  let coordinatedSnapshots: PaneSnapshot[] | undefined;
   let hintsCleared = false;
+  let active = true;
+  let resizeGeneration = 0;
+  let resizeTimer: NodeJS.Timeout | undefined;
+  let onResize: (() => void) | undefined;
 
   try {
     let startupStatus = parsePluginContext(
@@ -262,7 +257,7 @@ async function main(): Promise<void> {
       renderedPaneIds.push(...(renderResult.paneIds || []));
       startupStatus = renderResult.status || startupStatus;
       coordinatedLayout = renderResult.layout;
-      textPicker = Boolean(renderResult.textPicker);
+      coordinatedSnapshots = renderResult.snapshots;
     }
     if (startupStatus.message) {
       renderStatus(startupStatus as Status);
@@ -290,13 +285,50 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (!textPicker && renderedPaneIds.length === 0) {
-      const result = await renderPickerHints(targets, { env: process.env, sourcePaneId });
-      renderedPaneIds.push(...(result.paneIds || []));
-      textPicker = Boolean(result.textPicker);
-    }
-    clearScreen();
-    process.stdout.write(formatTextPicker(targets));
+    const drawSnapshot = (
+      currentLayout: PaneLayout,
+      currentTargets: readonly PaneTarget[],
+      snapshots: readonly PaneSnapshot[],
+    ): void => {
+      process.stdout.write(
+        renderSnapshot(
+          currentLayout,
+          currentTargets,
+          snapshots,
+          process.stdout.columns ||
+            Math.max(1, ...targets.map((target) => target.rect.x + target.rect.width)) - 3,
+          process.stdout.rows ||
+            Math.max(1, ...targets.map((target) => target.rect.y + target.rect.height)) - 2,
+        ),
+      );
+    };
+    drawSnapshot(layout!, targets, coordinatedSnapshots || (await captureSnapshots(targets)));
+    onResize = () => {
+      const generation = ++resizeGeneration;
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        void (async () => {
+          const currentLayout = await paneLayoutAsync(sourcePaneId);
+          if (!currentLayout || !active || generation !== resizeGeneration) return;
+          const byId = new Map(
+            buildTargets(currentLayout, new Map(), sourcePaneId, { includeCurrent: true }).map(
+              (target) => [target.paneId, target],
+            ),
+          );
+          // Keep the original shortcut-to-pane mapping, even if topology changes.
+          const currentTargets = targets.flatMap((target) => {
+            const current = byId.get(target.paneId);
+            return current ? [{ ...current, shortcut: target.shortcut }] : [];
+          });
+          const snapshots = await captureSnapshots(currentTargets);
+          if (active && generation === resizeGeneration)
+            drawSnapshot(currentLayout, currentTargets, snapshots);
+        })().catch(() => {
+          // A failed resize refresh leaves the last snapshot and mapping intact.
+        });
+      }, 60);
+    };
+    process.stdout.on("resize", onResize);
 
     const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
     const key = firstKey ? await firstKey : targets[0].shortcut;
@@ -316,6 +348,9 @@ async function main(): Promise<void> {
       throw selectionResult.reason;
     }
   } finally {
+    active = false;
+    clearTimeout(resizeTimer);
+    if (onResize) process.stdout.off("resize", onResize);
     if (!hintsCleared) {
       await clearHints(renderedPaneIds, process.env);
     }

@@ -302,6 +302,10 @@ function renderFiglet(text: string): FigletArt {
   return art;
 }
 
+export function hintTextLines(shortcut: string): string[] {
+  return [...renderFiglet(shortcut).lines];
+}
+
 function drawFiglet(
   rgba: Buffer,
   width: number,

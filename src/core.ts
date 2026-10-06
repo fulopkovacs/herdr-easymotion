@@ -14,6 +14,7 @@ export interface LayoutPane {
 }
 
 export interface PaneLayout {
+  area?: PaneRect;
   focused_pane_id?: string;
   zoomed?: boolean;
   panes?: LayoutPane[];

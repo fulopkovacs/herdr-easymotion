@@ -37,6 +37,7 @@ exports.HINT_COLORS = void 0;
 exports.backgroundForEnv = backgroundForEnv;
 exports.paneIdBackgroundForEnv = paneIdBackgroundForEnv;
 exports.encodePngRgba = encodePngRgba;
+exports.hintTextLines = hintTextLines;
 exports.createHintPngBase64 = createHintPngBase64;
 exports.colorForIndex = colorForIndex;
 exports.getCachedHintBase64 = getCachedHintBase64;
@@ -251,6 +252,9 @@ function renderFiglet(text) {
     };
     figletCache.set(text, art);
     return art;
+}
+function hintTextLines(shortcut) {
+    return [...renderFiglet(shortcut).lines];
 }
 function drawFiglet(rgba, width, height, art, scale, originX, originY, color) {
     for (let row = 0; row < art.lines.length; row += 1) {

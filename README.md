@@ -2,7 +2,7 @@
 
 Jump directly between visible panes in the active [Herdr](https://github.com/ogulcancelik/herdr) tab with large numbered pane hints.
 
-Herdr EasyMotion overlays each visible pane with a keyboard shortcut, then focuses the selected pane when you press the matching key. It is intended for layouts where directional pane movement is slower than selecting the destination directly.
+Herdr EasyMotion captures the visible panes and reconstructs the tab in a full-size terminal popup, with a large keyboard shortcut and pane ID centered over each pane. Press the matching key to focus that real pane. It is intended for layouts where directional pane movement is slower than selecting the destination directly.
 
 Hold Shift while pressing a numbered pane shortcut to copy that pane's ID to the clipboard without switching panes.
 
@@ -16,16 +16,9 @@ Install the plugin:
 herdr plugin install elliotekj/herdr-easymotion
 ```
 
-On Herdr 0.9.3, the picker shows numbered pane IDs and their tab positions in a terminal popup. Press the matching shortcut to jump, or Esc/q to cancel. No graphics configuration is required.
+No Kitty graphics configuration or Herdr fork is required. The picker uses supported `pane.layout` and `pane.read` APIs, not the `pane.graphics.*` APIs removed in Herdr 0.9.2.
 
-On versions exposing the `pane.graphics.info/set/clear` socket APIs, graphical pane hints are used when experimental Kitty graphics support is enabled:
-
-```toml
-[experimental]
-kitty_graphics = true
-```
-
-If the graphics API is unavailable or disabled, the plugin automatically uses the terminal picker. Enabling `kitty_graphics` cannot add missing socket methods; no server restart or version change is needed for the fallback.
+The background is a frozen text-and-color snapshot while you select; the underlying programs keep running and their terminals are not modified. Native images are not captured. Resizing refreshes the snapshots and layout while preserving the original shortcut-to-pane mapping. Small panes use compact hints.
 
 The hint background follows the macOS light or dark appearance. On other platforms, or to override detection, set `HERDR_EASYMOTION_APPEARANCE` to `light` or `dark`.
 
@@ -48,6 +41,8 @@ description = "select pane"
 ```
 
 Hints target panes in the active tab layout. If the tab is zoomed, Herdr only exposes the zoomed pane as visible, so there is no alternate pane to jump to.
+
+Press a pane's shortcut to jump, Shift+number to copy its ID, or Esc, q, or Ctrl+C to cancel.
 
 ## License
 

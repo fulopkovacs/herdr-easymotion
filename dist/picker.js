@@ -9,11 +9,11 @@ exports.renderHints = renderHints;
 exports.clearHints = clearHints;
 exports.isGraphicsDisabled = isGraphicsDisabled;
 exports.renderPickerHints = renderPickerHints;
-exports.formatTextPicker = formatTextPicker;
 const promises_1 = require("node:fs/promises");
 const core_1 = require("./core");
 const graphics_1 = require("./graphics");
 const herdr_1 = require("./herdr");
+const snapshot_1 = require("./snapshot");
 const SHIFTED_NUMBER_KEYS = "!@#$%^&*(";
 function clearScreen() {
     process.stdout.write("\x1b[2J\x1b[H");
@@ -57,6 +57,7 @@ function setupTerminal() {
     return {
         firstKey,
         restore: () => {
+            process.stdout.write("\x1b[0m\x1b[?7h");
             showCursor();
             process.stdin.setRawMode(false);
             process.stdin.pause();
@@ -130,16 +131,6 @@ async function renderPickerHints(targets, options = {}) {
         throw error;
     }
 }
-function formatTextPicker(targets) {
-    return [
-        "Jump to pane",
-        "",
-        ...targets.map((target) => `${target.shortcut}  ${target.paneId}${target.focused ? " (current)" : ""}  [${target.rect.x},${target.rect.y}]`),
-        "",
-        "Press a shortcut to jump; Shift+number copies the pane ID.",
-        "Esc or q cancels. Positions are column,row in the tab.",
-    ].join("\r\n");
-}
 function parseJsonArray(value) {
     const parsed = (0, core_1.parsePluginContext)(value);
     return (Array.isArray(parsed) ? parsed : []);
@@ -177,8 +168,12 @@ async function main() {
     const { firstKey, restore } = setupTerminal();
     const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
     let coordinatedLayout;
-    let textPicker = false;
+    let coordinatedSnapshots;
     let hintsCleared = false;
+    let active = true;
+    let resizeGeneration = 0;
+    let resizeTimer;
+    let onResize;
     try {
         let startupStatus = (0, core_1.parsePluginContext)(process.env.HERDR_JUMP_STATUS_JSON);
         const renderStatusPath = process.env.HERDR_JUMP_RENDER_STATUS_PATH;
@@ -187,7 +182,7 @@ async function main() {
             renderedPaneIds.push(...(renderResult.paneIds || []));
             startupStatus = renderResult.status || startupStatus;
             coordinatedLayout = renderResult.layout;
-            textPicker = Boolean(renderResult.textPicker);
+            coordinatedSnapshots = renderResult.snapshots;
         }
         if (startupStatus.message) {
             renderStatus(startupStatus);
@@ -207,13 +202,35 @@ async function main() {
             await waitForDismiss(firstKey);
             return;
         }
-        if (!textPicker && renderedPaneIds.length === 0) {
-            const result = await renderPickerHints(targets, { env: process.env, sourcePaneId });
-            renderedPaneIds.push(...(result.paneIds || []));
-            textPicker = Boolean(result.textPicker);
-        }
-        clearScreen();
-        process.stdout.write(formatTextPicker(targets));
+        const drawSnapshot = (currentLayout, currentTargets, snapshots) => {
+            process.stdout.write((0, snapshot_1.renderSnapshot)(currentLayout, currentTargets, snapshots, process.stdout.columns ||
+                Math.max(1, ...targets.map((target) => target.rect.x + target.rect.width)) - 3, process.stdout.rows ||
+                Math.max(1, ...targets.map((target) => target.rect.y + target.rect.height)) - 2));
+        };
+        drawSnapshot(layout, targets, coordinatedSnapshots || (await (0, snapshot_1.captureSnapshots)(targets)));
+        onResize = () => {
+            const generation = ++resizeGeneration;
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                void (async () => {
+                    const currentLayout = await (0, herdr_1.paneLayoutAsync)(sourcePaneId);
+                    if (!currentLayout || !active || generation !== resizeGeneration)
+                        return;
+                    const byId = new Map((0, core_1.buildTargets)(currentLayout, new Map(), sourcePaneId, { includeCurrent: true }).map((target) => [target.paneId, target]));
+                    // Keep the original shortcut-to-pane mapping, even if topology changes.
+                    const currentTargets = targets.flatMap((target) => {
+                        const current = byId.get(target.paneId);
+                        return current ? [{ ...current, shortcut: target.shortcut }] : [];
+                    });
+                    const snapshots = await (0, snapshot_1.captureSnapshots)(currentTargets);
+                    if (active && generation === resizeGeneration)
+                        drawSnapshot(currentLayout, currentTargets, snapshots);
+                })().catch(() => {
+                    // A failed resize refresh leaves the last snapshot and mapping intact.
+                });
+            }, 60);
+        };
+        process.stdout.on("resize", onResize);
         const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
         const key = firstKey ? await firstKey : targets[0].shortcut;
         const selection = keyToSelection(key);
@@ -232,6 +249,10 @@ async function main() {
         }
     }
     finally {
+        active = false;
+        clearTimeout(resizeTimer);
+        if (onResize)
+            process.stdout.off("resize", onResize);
         if (!hintsCleared) {
             await clearHints(renderedPaneIds, process.env);
         }

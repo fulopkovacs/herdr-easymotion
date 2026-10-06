@@ -7,11 +7,11 @@ import path from "node:path";
 import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
 import type { PaneLayout, Status } from "./core";
 import { openPluginPane, paneLayoutAsync } from "./herdr";
-import { clearHints, renderPickerHints } from "./picker";
+import { captureSnapshots } from "./snapshot";
+import type { PaneSnapshot } from "./snapshot";
 
 interface RenderResult {
-  paneIds?: string[];
-  textPicker?: boolean;
+  snapshots?: PaneSnapshot[];
   layout?: PaneLayout;
   status?: Status;
 }
@@ -24,7 +24,8 @@ function renderStatusPath(env: NodeJS.ProcessEnv): string {
 
 function writeRenderResult(filePath: string, result: RenderResult): void {
   const temporaryPath = `${filePath}.tmp`;
-  writeFileSync(temporaryPath, JSON.stringify(result));
+  // Snapshots can contain credentials or other private terminal contents.
+  writeFileSync(temporaryPath, JSON.stringify(result), { mode: 0o600, flag: "wx" });
   renameSync(temporaryPath, filePath);
 }
 
@@ -47,8 +48,8 @@ async function main(): Promise<void> {
       plugin_id: pluginId,
       entrypoint: "picker",
       placement: "popup",
-      width: "80%",
-      height: "80%",
+      width: "100%",
+      height: "100%",
       env: paneEnv,
       focus: true,
     },
@@ -74,7 +75,7 @@ async function main(): Promise<void> {
       try {
         return {
           layout,
-          ...(await renderPickerHints(targets, { env, sourcePaneId })),
+          snapshots: await captureSnapshots(targets, env),
         };
       } catch (error) {
         return {
@@ -99,9 +100,8 @@ async function main(): Promise<void> {
       return result;
     });
 
-  const [openError, result] = await Promise.all([openPromise, renderPromise]);
+  const [openError] = await Promise.all([openPromise, renderPromise]);
   if (openError) {
-    await clearHints(result.paneIds || [], env);
     rmSync(statusPath, { force: true });
     rmSync(`${statusPath}.tmp`, { force: true });
     throw openError;

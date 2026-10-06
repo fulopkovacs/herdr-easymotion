@@ -52,7 +52,7 @@ function runNode(scriptPath, env) {
   });
 }
 
-test("Herdr 0.9.3 fallback survives launcher handoff and selects a pane", async () => {
+test("snapshot picker survives launcher handoff and selects without graphics APIs", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "easymotion-handoff-"));
   const socketPath = path.join(dir, "api.sock");
   const fakeHerdrPath = path.join(dir, "herdr.js");
@@ -80,9 +80,12 @@ test("Herdr 0.9.3 fallback survives launcher handoff and selects a pane", async 
         popupEnv = payload.params.env;
         popupSize = [payload.params.width, payload.params.height];
       }
-      const response = payload.method.startsWith("pane.graphics.")
-        ? { error: { code: "unknown_method", message: `unknown method: ${payload.method}` } }
-        : { result: { type: "ok" } };
+      const response =
+        payload.method === "pane.read"
+          ? { result: { read: { text: `Captured ${payload.params.pane_id}` } } }
+          : payload.method.startsWith("pane.graphics.")
+            ? { error: { code: "unknown_method", message: `unknown method: ${payload.method}` } }
+            : { result: { type: "ok" } };
       socket.end(JSON.stringify({ id: payload.id, ...response }) + "\n");
     });
   });
@@ -99,18 +102,25 @@ test("Herdr 0.9.3 fallback survives launcher handoff and selects a pane", async 
     };
     const launcher = await runNode(path.join(__dirname, "../dist/open-picker.js"), env);
     assert.equal(launcher.code, 0, launcher.stderr);
-    assert.deepEqual(popupSize, ["80%", "80%"]);
+    assert.deepEqual(popupSize, ["100%", "100%"]);
     const handoff = JSON.parse(readFileSync(popupEnv.HERDR_JUMP_RENDER_STATUS_PATH, "utf8"));
-    assert.equal(handoff.textPicker, true);
+    assert.equal(handoff.snapshots.length, 2);
     assert.equal(handoff.status, undefined);
     const picker = await runNode(path.join(__dirname, "../dist/picker.js"), {
       ...env,
       ...popupEnv,
     });
     assert.equal(picker.code, 0, picker.stderr);
-    assert.match(picker.stdout, /1  w1:p1 \(current\)/);
-    assert.match(picker.stdout, /2  w1:p2/);
-    assert.deepEqual(methods, ["plugin.pane.open", "pane.graphics.info", "pane.focus"]);
+    assert.match(picker.stdout, /w1:p1/);
+    assert.match(picker.stdout, /w1:p2/);
+    assert.match(picker.stdout, /Captured w1:p1/);
+    assert.match(picker.stdout, /Captured w1:p2/);
+    assert.equal(methods.filter((method) => method === "pane.read").length, 2);
+    assert.equal(methods.at(-1), "pane.focus");
+    assert.equal(
+      methods.some((method) => method.startsWith("pane.graphics.")),
+      false,
+    );
     assert.equal(existsSync(popupEnv.HERDR_JUMP_RENDER_STATUS_PATH), false);
   } finally {
     await close(server);
@@ -263,7 +273,7 @@ test("settleRequests waits for all work before surfacing a failure", async () =>
   assert.deepEqual(completed, ["second"]);
 });
 
-test("open-picker clears rendered hints when the popup command fails", async () => {
+test("open-picker captures read-only snapshots and removes the handoff when popup opening fails", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "herdr-easymotion-"));
   const socketPath = path.join(dir, "herdr.sock");
   const fakeHerdrPath = path.join(dir, "fake-herdr.js");
@@ -315,17 +325,14 @@ test("open-picker clears rendered hints when the popup command fails", async () 
     assert.equal(popupOpenedBeforeLayout, true);
     assert.deepEqual(
       methods
-        .filter((entry) => entry.method === "pane.graphics.set")
+        .filter((entry) => entry.method === "pane.read")
         .map((entry) => entry.paneId)
         .sort(),
       ["w1:p1", "w1:p2"],
     );
-    assert.deepEqual(
-      methods
-        .filter((entry) => entry.method === "pane.graphics.clear")
-        .map((entry) => entry.paneId)
-        .sort(),
-      ["w1:p1", "w1:p2"],
+    assert.equal(
+      methods.some((entry) => entry.method.startsWith("pane.graphics.")),
+      false,
     );
   } finally {
     await close(server);
@@ -432,6 +439,8 @@ test("picker focuses the selection and clears hints without a finish process", a
         `${left.method}:${left.paneId}`.localeCompare(`${right.method}:${right.paneId}`),
       ),
       [
+        { method: "pane.read", paneId: "w1:p1" },
+        { method: "pane.read", paneId: "w1:p2" },
         { method: "pane.focus", paneId: "w1:p1" },
         { method: "pane.graphics.clear", paneId: "w1:p1" },
         { method: "pane.graphics.clear", paneId: "w1:p2" },
