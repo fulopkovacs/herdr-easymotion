@@ -374,7 +374,9 @@ export function renderSnapshot(
     const content = snapshotRows(snapshot?.text || "");
     const contentWidth = Math.max(0, ...content.map((line) => line.length));
     // Pane reads contain the content, not the surrounding pane border/gutter.
-    const insetX = Math.min(1, Math.max(0, Math.floor((target.rect.width - contentWidth) / 2)));
+    // A left border without a right border/gutter still consumes one cell.
+    // This occurs in Claude's pane, whose full-width rules expose the offset.
+    const insetX = Math.min(1, Math.max(0, Math.ceil((target.rect.width - contentWidth) / 2)));
     // A shared horizontal divider belongs to the pane below it. The upper
     // pane can therefore have a top border but no bottom border: a one-row
     // difference must inset the content by one, not round down to zero.

@@ -68,6 +68,34 @@ test("captured contents and large shortcuts are drawn in the corresponding pane 
   assert.doesNotMatch(output, /Jump to pane|Positions are column,row/);
 });
 
+test("a left-only pane border preserves the first and last captured columns", () => {
+  const leftOnly = {
+    area: { x: 0, y: 0, width: 80, height: 32 },
+    panes: [
+      { pane_id: "w1:p1", rect: { x: 0, y: 0, width: 40, height: 32 } },
+      { pane_id: "w1:p2", rect: { x: 40, y: 0, width: 40, height: 32 } },
+    ],
+  };
+  const targets = buildTargets(leftOnly, new Map(), "w1:p1", { includeCurrent: true });
+  const line = "START" + "─".repeat(31) + "END";
+  const rows = screen(
+    renderSnapshot(
+      leftOnly,
+      targets,
+      [{ paneId: "w1:p1", text: Array(30).fill(line).join("\r\n") }],
+      77,
+      30,
+      env,
+    ),
+    77,
+    30,
+  );
+  // The popup replaces the outer left border. Content starts at column zero
+  // and reaches the shared divider without losing its first character.
+  assert.equal(rows[0].slice(0, 39), line);
+  assert.equal(rows[0][39], "│");
+});
+
 test("a top-only pane border preserves the first and last captured rows", () => {
   const topOnly = {
     area: { x: 0, y: 0, width: 80, height: 32 },
