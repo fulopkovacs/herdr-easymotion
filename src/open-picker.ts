@@ -1,74 +1,109 @@
 #!/usr/bin/env node
 
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
-import { paneLayout, runHerdr } from "./herdr";
+import type { PaneLayout, Status } from "./core";
+import { openPluginPane, paneLayoutAsync } from "./herdr";
 import { clearHints, graphicsDisabledStatus, isGraphicsDisabled, renderHints } from "./picker";
+
+interface RenderResult {
+  paneIds?: string[];
+  layout?: PaneLayout;
+  status?: Status;
+}
+
+function renderStatusPath(env: NodeJS.ProcessEnv): string {
+  const directory = env.HERDR_PLUGIN_STATE_DIR || env.TMPDIR || os.tmpdir();
+  mkdirSync(directory, { recursive: true });
+  return path.join(directory, `render-${process.pid}-${Date.now()}.json`);
+}
+
+function writeRenderResult(filePath: string, result: RenderResult): void {
+  const temporaryPath = `${filePath}.tmp`;
+  writeFileSync(temporaryPath, JSON.stringify(result));
+  renameSync(temporaryPath, filePath);
+}
 
 async function main(): Promise<void> {
   const env = process.env;
   const pluginId = env.HERDR_PLUGIN_ID || "com.elliotekj.herdr-easymotion";
   const context = parsePluginContext(env.HERDR_PLUGIN_CONTEXT_JSON);
   const sourcePaneId = resolvePaneIdFromContext(context, env);
-  const layout = paneLayout(sourcePaneId, env);
-  const targets = buildTargets(layout, new Map(), sourcePaneId, {
-    includeCurrent: true,
-  });
-  const status = createStatus(
-    layout,
-    layout?.panes && layout.panes.length > 1 ? targets : [],
-    sourcePaneId,
-  );
-  if (status) {
-    return;
-  }
-
-  let renderedPaneIds: string[] = [];
-  let startupStatus = null;
-
-  try {
-    renderedPaneIds = await renderHints(targets, { env, sourcePaneId });
-  } catch (error) {
-    if (isGraphicsDisabled(error)) {
-      startupStatus = graphicsDisabledStatus();
-    } else {
-      throw error;
-    }
-  }
-
-  const args = [
-    "plugin",
-    "pane",
-    "open",
-    "--plugin",
-    pluginId,
-    "--entrypoint",
-    "picker",
-    "--placement",
-    "popup",
-    "--width",
-    "0",
-    "--height",
-    "0",
-    "--focus",
-    "--env",
-    `HERDR_JUMP_LAYOUT_JSON=${JSON.stringify(layout)}`,
-    "--env",
-    `HERDR_JUMP_PRE_RENDERED_PANES_JSON=${JSON.stringify(renderedPaneIds)}`,
-  ];
-
-  if (startupStatus) {
-    args.push("--env", `HERDR_JUMP_STATUS_JSON=${JSON.stringify(startupStatus)}`);
-  }
-
+  const statusPath = renderStatusPath(env);
+  const paneEnv: Record<string, string> = {
+    HERDR_JUMP_RENDER_STATUS_PATH: statusPath,
+  };
   if (sourcePaneId) {
-    args.push("--env", `HERDR_JUMP_SOURCE_PANE_ID=${sourcePaneId}`);
+    paneEnv.HERDR_JUMP_SOURCE_PANE_ID = sourcePaneId;
   }
 
-  try {
-    runHerdr(args, { env });
-  } catch (error) {
-    await clearHints(renderedPaneIds, env);
-    throw error;
+  // Open the modal before discovering and rendering the layout so it captures follow-up input.
+  const openPromise = openPluginPane(
+    {
+      plugin_id: pluginId,
+      entrypoint: "picker",
+      placement: "popup",
+      env: paneEnv,
+      focus: true,
+    },
+    env,
+  ).then(
+    () => null,
+    (error: unknown) => error,
+  );
+  const renderPromise = paneLayoutAsync(sourcePaneId, env)
+    .then(async (layout): Promise<RenderResult> => {
+      const targets = buildTargets(layout, new Map(), sourcePaneId, {
+        includeCurrent: true,
+      });
+      const status = createStatus(
+        layout,
+        layout?.panes && layout.panes.length > 1 ? targets : [],
+        sourcePaneId,
+      );
+      if (status) {
+        return { layout, status };
+      }
+
+      try {
+        return {
+          layout,
+          paneIds: await renderHints(targets, { env, sourcePaneId }),
+        };
+      } catch (error) {
+        return {
+          layout,
+          status: isGraphicsDisabled(error)
+            ? graphicsDisabledStatus()
+            : {
+                title: "Jump",
+                message: "Pane hints could not be rendered.",
+                detail: error instanceof Error ? error.message : String(error),
+              },
+        };
+      }
+    })
+    .catch((error: unknown): RenderResult => ({
+      status: {
+        title: "Jump",
+        message: "The pane layout could not be loaded.",
+        detail: error instanceof Error ? error.message : String(error),
+      },
+    }))
+    .then((result) => {
+      writeRenderResult(statusPath, result);
+      return result;
+    });
+
+  const [openError, result] = await Promise.all([openPromise, renderPromise]);
+  if (openError) {
+    await clearHints(result.paneIds || [], env);
+    rmSync(statusPath, { force: true });
+    rmSync(`${statusPath}.tmp`, { force: true });
+    throw openError;
   }
 }
 

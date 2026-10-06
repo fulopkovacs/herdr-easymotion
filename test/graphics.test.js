@@ -45,11 +45,15 @@ test("createHintPngBase64 rejects invalid dimensions", () => {
   assert.throws(() => createHintPngBase64("1", 20.5, 20), /positive safe integers/);
 });
 
-test("createHintPngBase64 explains when figlet is unavailable", () => {
-  assert.throws(
-    () => createHintPngBase64("1", 81, 120, HINT_COLORS[0], "", { FIGLET_BIN: "/does/not/exist" }),
-    /figlet is required.*not found/i,
+test("createHintPngBase64 renders without the figlet CLI", () => {
+  const buffer = Buffer.from(
+    createHintPngBase64("1", 81, 120, HINT_COLORS[0], "", {
+      FIGLET_BIN: "/does/not/exist",
+    }),
+    "base64",
   );
+
+  assert.deepEqual([...buffer.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 });
 
 test("createHintPngBase64 renders letter shortcuts distinctly", () => {

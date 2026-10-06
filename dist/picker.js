@@ -1,21 +1,18 @@
 #!/usr/bin/env node
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.graphicsDisabledStatus = graphicsDisabledStatus;
-exports.keyToShortcut = keyToShortcut;
+exports.readKey = readKey;
+exports.keyToSelection = keyToSelection;
+exports.copyPaneId = copyPaneId;
 exports.renderHints = renderHints;
 exports.clearHints = clearHints;
 exports.isGraphicsDisabled = isGraphicsDisabled;
-exports.scheduleFinish = scheduleFinish;
-const node_child_process_1 = require("node:child_process");
-const node_path_1 = __importDefault(require("node:path"));
-const node_readline_1 = __importDefault(require("node:readline"));
+const promises_1 = require("node:fs/promises");
 const core_1 = require("./core");
 const graphics_1 = require("./graphics");
 const herdr_1 = require("./herdr");
+const SHIFTED_NUMBER_KEYS = "!@#$%^&*(";
 function clearScreen() {
     process.stdout.write("\x1b[2J\x1b[H");
 }
@@ -41,36 +38,46 @@ function graphicsDisabledStatus() {
         detail: "Add [experimental] kitty_graphics = true to your Herdr config, then reload Herdr.",
     };
 }
-function readKey() {
+function readKey(input = process.stdin) {
     return new Promise((resolve) => {
-        process.stdin.once("data", (chunk) => resolve(chunk.toString()));
+        input.once("data", (chunk) => resolve(chunk.toString()));
     });
 }
 function setupTerminal() {
     if (!process.stdin.isTTY) {
-        return () => { };
+        return { firstKey: null, restore: () => { } };
     }
-    node_readline_1.default.emitKeypressEvents(process.stdin);
     process.stdin.setRawMode(true);
+    const firstKey = readKey();
     process.stdin.resume();
     hideCursor();
     clearScreen();
-    return () => {
-        showCursor();
-        process.stdin.setRawMode(false);
-        process.stdin.pause();
+    return {
+        firstKey,
+        restore: () => {
+            showCursor();
+            process.stdin.setRawMode(false);
+            process.stdin.pause();
+        },
     };
 }
-async function waitForDismiss() {
-    if (process.stdin.isTTY) {
-        await readKey();
+async function waitForDismiss(firstKey) {
+    if (firstKey) {
+        await firstKey;
     }
 }
-function keyToShortcut(key) {
+function keyToSelection(key) {
     if (key === "\u0003" || key === "\u001b" || key.toLowerCase() === "q") {
         return null;
     }
-    return key.toLowerCase();
+    const shiftedNumberIndex = SHIFTED_NUMBER_KEYS.indexOf(key);
+    return {
+        shortcut: shiftedNumberIndex === -1 ? key.toLowerCase() : String(shiftedNumberIndex + 1),
+        copyPaneId: shiftedNumberIndex !== -1,
+    };
+}
+function copyPaneId(paneId, output = process.stdout) {
+    output.write(`\x1b]52;c;${Buffer.from(paneId).toString("base64")}\x07`);
 }
 async function renderHints(targets, options = {}) {
     const env = options.env || process.env;
@@ -113,33 +120,57 @@ function parseJsonArray(value) {
     const parsed = (0, core_1.parsePluginContext)(value);
     return (Array.isArray(parsed) ? parsed : []);
 }
-function scheduleFinish(targetPaneId, paneIds, env = process.env) {
-    const child = (0, node_child_process_1.spawn)(process.execPath, [
-        node_path_1.default.join(__dirname, "finish-selection.js"),
-        targetPaneId || "",
-        JSON.stringify([...new Set(paneIds)]),
-    ], {
-        cwd: node_path_1.default.join(__dirname, ".."),
-        detached: true,
-        env,
-        stdio: "ignore",
-    });
-    child.unref();
+async function waitForRenderResult(filePath) {
+    const deadline = Date.now() + 5500;
+    while (Date.now() < deadline) {
+        try {
+            const result = JSON.parse(await (0, promises_1.readFile)(filePath, "utf8"));
+            await (0, promises_1.rm)(filePath, { force: true });
+            return result;
+        }
+        catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+                return {
+                    status: {
+                        title: "Jump",
+                        message: "Pane hints could not be rendered.",
+                        detail: error instanceof Error ? error.message : String(error),
+                    },
+                };
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+    }
+    return {
+        status: {
+            title: "Jump",
+            message: "Pane hints timed out.",
+            detail: "Herdr did not finish rendering pane hints.",
+        },
+    };
 }
 async function main() {
-    const restore = setupTerminal();
+    const { firstKey, restore } = setupTerminal();
     const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
-    let finishScheduled = false;
+    let coordinatedLayout;
+    let hintsCleared = false;
     try {
-        const startupStatus = (0, core_1.parsePluginContext)(process.env.HERDR_JUMP_STATUS_JSON);
+        let startupStatus = (0, core_1.parsePluginContext)(process.env.HERDR_JUMP_STATUS_JSON);
+        const renderStatusPath = process.env.HERDR_JUMP_RENDER_STATUS_PATH;
+        if (renderStatusPath) {
+            const renderResult = await waitForRenderResult(renderStatusPath);
+            renderedPaneIds.push(...(renderResult.paneIds || []));
+            startupStatus = renderResult.status || startupStatus;
+            coordinatedLayout = renderResult.layout;
+        }
         if (startupStatus.message) {
             renderStatus(startupStatus);
-            await waitForDismiss();
+            await waitForDismiss(firstKey);
             return;
         }
         const context = (0, core_1.parsePluginContext)(process.env.HERDR_PLUGIN_CONTEXT_JSON);
         const sourcePaneId = (0, core_1.resolvePaneIdFromContext)(context, process.env);
-        const snapshotLayout = (0, core_1.parsePluginContext)(process.env.HERDR_JUMP_LAYOUT_JSON);
+        const snapshotLayout = coordinatedLayout || (0, core_1.parsePluginContext)(process.env.HERDR_JUMP_LAYOUT_JSON);
         const layout = snapshotLayout.panes ? snapshotLayout : (0, herdr_1.paneLayout)(sourcePaneId, process.env);
         const targets = (0, core_1.buildTargets)(layout, new Map(), sourcePaneId, {
             includeCurrent: true,
@@ -147,7 +178,7 @@ async function main() {
         const status = (0, core_1.createStatus)(layout, layout?.panes && layout.panes.length > 1 ? targets : [], sourcePaneId);
         if (status) {
             renderStatus(status);
-            await waitForDismiss();
+            await waitForDismiss(firstKey);
             return;
         }
         try {
@@ -161,20 +192,30 @@ async function main() {
         catch (error) {
             if (isGraphicsDisabled(error)) {
                 renderStatus(graphicsDisabledStatus());
-                await waitForDismiss();
+                await waitForDismiss(firstKey);
                 return;
             }
             throw error;
         }
         const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
-        const key = process.stdin.isTTY ? await readKey() : targets[0].shortcut;
-        const shortcut = keyToShortcut(key);
-        const selected = shortcut === null ? undefined : shortcutMap.get(shortcut);
-        scheduleFinish(selected?.paneId || "", renderedPaneIds, process.env);
-        finishScheduled = true;
+        const key = firstKey ? await firstKey : targets[0].shortcut;
+        const selection = keyToSelection(key);
+        const selected = selection ? shortcutMap.get(selection.shortcut) : undefined;
+        const [selectionResult] = await Promise.allSettled([
+            selected
+                ? selection?.copyPaneId
+                    ? Promise.resolve(copyPaneId(selected.paneId))
+                    : (0, herdr_1.focusPane)(selected.paneId, process.env)
+                : Promise.resolve(),
+            clearHints(renderedPaneIds, process.env),
+        ]);
+        hintsCleared = true;
+        if (selectionResult.status === "rejected") {
+            throw selectionResult.reason;
+        }
     }
     finally {
-        if (!finishScheduled) {
+        if (!hintsCleared) {
             await clearHints(renderedPaneIds, process.env);
         }
         clearScreen();

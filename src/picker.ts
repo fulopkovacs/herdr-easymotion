@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import path from "node:path";
-import readline from "node:readline";
+import { readFile, rm } from "node:fs/promises";
 
 import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
 import type { PaneLayout, PaneTarget, Status } from "./core";
@@ -10,6 +8,7 @@ import { createOverlayParams, getCachedCellSize, setCachedCellSize } from "./gra
 import type { CellSize } from "./graphics";
 import {
   HerdrRequestError,
+  focusPane,
   paneGraphicsClearMany,
   paneGraphicsInfo,
   paneGraphicsSetMany,
@@ -21,6 +20,24 @@ interface RenderHintsOptions {
   sourcePaneId?: string | null;
   controlPaneId?: string | null;
 }
+
+interface RenderResult {
+  paneIds?: string[];
+  layout?: PaneLayout;
+  status?: Status;
+}
+
+interface TerminalSession {
+  firstKey: Promise<string> | null;
+  restore: () => void;
+}
+
+interface PaneSelection {
+  shortcut: string;
+  copyPaneId: boolean;
+}
+
+const SHIFTED_NUMBER_KEYS = "!@#$%^&*(";
 
 function clearScreen(): void {
   process.stdout.write("\x1b[2J\x1b[H");
@@ -52,42 +69,56 @@ export function graphicsDisabledStatus(): Status {
   };
 }
 
-function readKey(): Promise<string> {
+export function readKey(input: NodeJS.ReadableStream = process.stdin): Promise<string> {
   return new Promise((resolve) => {
-    process.stdin.once("data", (chunk: Buffer | string) => resolve(chunk.toString()));
+    input.once("data", (chunk: Buffer | string) => resolve(chunk.toString()));
   });
 }
 
-function setupTerminal(): () => void {
+function setupTerminal(): TerminalSession {
   if (!process.stdin.isTTY) {
-    return () => {};
+    return { firstKey: null, restore: () => {} };
   }
 
-  readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
+  const firstKey = readKey();
   process.stdin.resume();
   hideCursor();
   clearScreen();
 
-  return () => {
-    showCursor();
-    process.stdin.setRawMode(false);
-    process.stdin.pause();
+  return {
+    firstKey,
+    restore: () => {
+      showCursor();
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+    },
   };
 }
 
-async function waitForDismiss(): Promise<void> {
-  if (process.stdin.isTTY) {
-    await readKey();
+async function waitForDismiss(firstKey: Promise<string> | null): Promise<void> {
+  if (firstKey) {
+    await firstKey;
   }
 }
 
-export function keyToShortcut(key: string): string | null {
+export function keyToSelection(key: string): PaneSelection | null {
   if (key === "\u0003" || key === "\u001b" || key.toLowerCase() === "q") {
     return null;
   }
 
-  return key.toLowerCase();
+  const shiftedNumberIndex = SHIFTED_NUMBER_KEYS.indexOf(key);
+  return {
+    shortcut: shiftedNumberIndex === -1 ? key.toLowerCase() : String(shiftedNumberIndex + 1),
+    copyPaneId: shiftedNumberIndex !== -1,
+  };
+}
+
+export function copyPaneId(
+  paneId: string,
+  output: Pick<NodeJS.WritableStream, "write"> = process.stdout,
+): void {
+  output.write(`\x1b]52;c;${Buffer.from(paneId).toString("base64")}\x07`);
 }
 
 export async function renderHints(
@@ -151,46 +182,64 @@ function parseJsonArray(value: string | undefined): string[] {
   return (Array.isArray(parsed) ? parsed : []) as string[];
 }
 
-export function scheduleFinish(
-  targetPaneId: string,
-  paneIds: string[],
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  const child = spawn(
-    process.execPath,
-    [
-      path.join(__dirname, "finish-selection.js"),
-      targetPaneId || "",
-      JSON.stringify([...new Set(paneIds)]),
-    ],
-    {
-      cwd: path.join(__dirname, ".."),
-      detached: true,
-      env,
-      stdio: "ignore",
+async function waitForRenderResult(filePath: string): Promise<RenderResult> {
+  const deadline = Date.now() + 5500;
+
+  while (Date.now() < deadline) {
+    try {
+      const result = JSON.parse(await readFile(filePath, "utf8")) as RenderResult;
+      await rm(filePath, { force: true });
+      return result;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        return {
+          status: {
+            title: "Jump",
+            message: "Pane hints could not be rendered.",
+            detail: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+  }
+
+  return {
+    status: {
+      title: "Jump",
+      message: "Pane hints timed out.",
+      detail: "Herdr did not finish rendering pane hints.",
     },
-  );
-  child.unref();
+  };
 }
 
 async function main(): Promise<void> {
-  const restore = setupTerminal();
+  const { firstKey, restore } = setupTerminal();
   const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
-  let finishScheduled = false;
+  let coordinatedLayout: PaneLayout | undefined;
+  let hintsCleared = false;
 
   try {
-    const startupStatus = parsePluginContext(
+    let startupStatus = parsePluginContext(
       process.env.HERDR_JUMP_STATUS_JSON,
     ) as unknown as Partial<Status>;
+    const renderStatusPath = process.env.HERDR_JUMP_RENDER_STATUS_PATH;
+    if (renderStatusPath) {
+      const renderResult = await waitForRenderResult(renderStatusPath);
+      renderedPaneIds.push(...(renderResult.paneIds || []));
+      startupStatus = renderResult.status || startupStatus;
+      coordinatedLayout = renderResult.layout;
+    }
     if (startupStatus.message) {
       renderStatus(startupStatus as Status);
-      await waitForDismiss();
+      await waitForDismiss(firstKey);
       return;
     }
 
     const context = parsePluginContext(process.env.HERDR_PLUGIN_CONTEXT_JSON);
     const sourcePaneId = resolvePaneIdFromContext(context, process.env);
-    const snapshotLayout = parsePluginContext(process.env.HERDR_JUMP_LAYOUT_JSON) as PaneLayout;
+    const snapshotLayout =
+      coordinatedLayout || (parsePluginContext(process.env.HERDR_JUMP_LAYOUT_JSON) as PaneLayout);
     const layout = snapshotLayout.panes ? snapshotLayout : paneLayout(sourcePaneId, process.env);
     const targets = buildTargets(layout, new Map(), sourcePaneId, {
       includeCurrent: true,
@@ -203,7 +252,7 @@ async function main(): Promise<void> {
 
     if (status) {
       renderStatus(status);
-      await waitForDismiss();
+      await waitForDismiss(firstKey);
       return;
     }
 
@@ -219,21 +268,31 @@ async function main(): Promise<void> {
     } catch (error) {
       if (isGraphicsDisabled(error)) {
         renderStatus(graphicsDisabledStatus());
-        await waitForDismiss();
+        await waitForDismiss(firstKey);
         return;
       }
       throw error;
     }
 
     const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
-    const key = process.stdin.isTTY ? await readKey() : targets[0].shortcut;
-    const shortcut = keyToShortcut(key);
-    const selected = shortcut === null ? undefined : shortcutMap.get(shortcut);
+    const key = firstKey ? await firstKey : targets[0].shortcut;
+    const selection = keyToSelection(key);
+    const selected = selection ? shortcutMap.get(selection.shortcut) : undefined;
 
-    scheduleFinish(selected?.paneId || "", renderedPaneIds, process.env);
-    finishScheduled = true;
+    const [selectionResult] = await Promise.allSettled([
+      selected
+        ? selection?.copyPaneId
+          ? Promise.resolve(copyPaneId(selected.paneId))
+          : focusPane(selected.paneId, process.env)
+        : Promise.resolve(),
+      clearHints(renderedPaneIds, process.env),
+    ]);
+    hintsCleared = true;
+    if (selectionResult.status === "rejected") {
+      throw selectionResult.reason;
+    }
   } finally {
-    if (!finishScheduled) {
+    if (!hintsCleared) {
       await clearHints(renderedPaneIds, process.env);
     }
     clearScreen();

@@ -7,11 +7,14 @@ exports.HerdrRequestError = exports.MAX_TIMEOUT_MS = void 0;
 exports.herdrBin = herdrBin;
 exports.requestTimeoutMs = requestTimeoutMs;
 exports.runHerdrJson = runHerdrJson;
+exports.runHerdrJsonAsync = runHerdrJsonAsync;
 exports.runHerdr = runHerdr;
 exports.request = request;
 exports.paneLayout = paneLayout;
+exports.paneLayoutAsync = paneLayoutAsync;
 exports.paneList = paneList;
 exports.focusPane = focusPane;
+exports.openPluginPane = openPluginPane;
 exports.paneGraphicsInfo = paneGraphicsInfo;
 exports.paneGraphicsSet = paneGraphicsSet;
 exports.paneGraphicsClear = paneGraphicsClear;
@@ -33,6 +36,22 @@ exports.HerdrRequestError = HerdrRequestError;
 function herdrBin(env = process.env) {
     return env.HERDR_BIN_PATH || "herdr";
 }
+function herdrExitError(args, status, stderr) {
+    const detail = stderr ? `: ${stderr.trim()}` : "";
+    return new Error(`herdr ${args.join(" ")} failed with exit ${status}${detail}`);
+}
+function herdrInvalidJsonError(args, error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return new Error(`herdr ${args.join(" ")} returned invalid JSON: ${message}`);
+}
+function parseHerdrJson(args, stdout) {
+    try {
+        return JSON.parse(stdout);
+    }
+    catch (error) {
+        throw herdrInvalidJsonError(args, error);
+    }
+}
 function requestTimeoutMs(options = {}, env = process.env) {
     const value = options.timeoutMs ?? env.HERDR_REQUEST_TIMEOUT_MS ?? 5000;
     const timeoutMs = Number(value);
@@ -52,16 +71,42 @@ function runHerdrJson(args, options = {}) {
         throw result.error;
     }
     if (result.status !== 0) {
-        const stderr = result.stderr ? `: ${result.stderr.trim()}` : "";
-        throw new Error(`herdr ${args.join(" ")} failed with exit ${result.status}${stderr}`);
+        throw herdrExitError(args, result.status, result.stderr);
     }
-    try {
-        return JSON.parse(result.stdout);
-    }
-    catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`herdr ${args.join(" ")} returned invalid JSON: ${message}`);
-    }
+    return parseHerdrJson(args, result.stdout);
+}
+function runHerdrJsonAsync(args, options = {}) {
+    const env = options.env || process.env;
+    return new Promise((resolve, reject) => {
+        const child = (0, node_child_process_1.spawn)(herdrBin(env), args, {
+            cwd: options.cwd,
+            env,
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+            stdout += chunk;
+        });
+        child.stderr.on("data", (chunk) => {
+            stderr += chunk;
+        });
+        child.on("error", reject);
+        child.on("close", (status) => {
+            if (status !== 0) {
+                reject(herdrExitError(args, status, stderr));
+                return;
+            }
+            try {
+                resolve(parseHerdrJson(args, stdout));
+            }
+            catch (error) {
+                reject(error);
+            }
+        });
+    });
 }
 function runHerdr(args, options = {}) {
     const env = options.env || process.env;
@@ -75,8 +120,7 @@ function runHerdr(args, options = {}) {
         throw result.error;
     }
     if (result.status !== 0) {
-        const stderr = result.stderr ? `: ${result.stderr.trim()}` : "";
-        throw new Error(`herdr ${args.join(" ")} failed with exit ${result.status}${stderr}`);
+        throw herdrExitError(args, result.status, result.stderr);
     }
     return result.stdout;
 }
@@ -161,25 +205,29 @@ function request(method, params = {}, options = {}) {
         });
     });
 }
-function paneLayout(paneId, env = process.env) {
-    const args = ["pane", "layout"];
-    if (paneId) {
-        args.push("--pane", paneId);
-    }
-    else {
-        args.push("--current");
-    }
-    const response = runHerdrJson(args, { env });
+function paneLayoutFromResponse(response) {
     const result = response.result;
     return ((result && "layout" in result ? result.layout : undefined) ??
         response.layout ??
         result);
+}
+function paneLayoutArgs(paneId) {
+    return paneId ? ["pane", "layout", "--pane", paneId] : ["pane", "layout", "--current"];
+}
+function paneLayout(paneId, env = process.env) {
+    return paneLayoutFromResponse(runHerdrJson(paneLayoutArgs(paneId), { env }));
+}
+async function paneLayoutAsync(paneId, env = process.env) {
+    return paneLayoutFromResponse(await runHerdrJsonAsync(paneLayoutArgs(paneId), { env }));
 }
 function paneList(env = process.env) {
     return runHerdrJson(["pane", "list"], { env });
 }
 function focusPane(paneId, env = process.env) {
     return request("pane.focus", { pane_id: paneId }, { env });
+}
+function openPluginPane(params, env = process.env) {
+    return request("plugin.pane.open", params, { env });
 }
 async function paneGraphicsInfo(paneId, env = process.env) {
     const response = await request("pane.graphics.info", { pane_id: paneId }, { env });

@@ -4,6 +4,8 @@ Jump directly between visible panes in the active [Herdr](https://github.com/ogu
 
 Herdr EasyMotion overlays each visible pane with a keyboard shortcut, then focuses the selected pane when you press the matching key. It is intended for layouts where directional pane movement is slower than selecting the destination directly.
 
+Hold Shift while pressing a numbered pane shortcut to copy that pane's ID to the clipboard without switching panes.
+
 ![Herdr EasyMotion pane hints demo](assets/herdr-easymotion-pane-hints.png)
 
 ## Installation
@@ -22,8 +24,6 @@ kitty_graphics = true
 ```
 
 Reload or restart Herdr after changing the config.
-
-Pane hints are rendered with the `figlet` CLI. Install FIGlet and ensure `figlet` is available in your `PATH` before invoking the plugin.
 
 The hint background follows the macOS light or dark appearance. On other platforms, or to override detection, set `HERDR_EASYMOTION_APPEARANCE` to `light` or `dark`.
 
