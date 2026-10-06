@@ -16,14 +16,16 @@ Install the plugin:
 herdr plugin install elliotekj/herdr-easymotion
 ```
 
-Pane hints use Herdr's experimental Kitty graphics support. Enable it in your Herdr config:
+On Herdr 0.9.3, the picker shows numbered pane IDs and their tab positions in a terminal popup. Press the matching shortcut to jump, or Esc/q to cancel. No graphics configuration is required.
+
+On versions exposing the `pane.graphics.info/set/clear` socket APIs, graphical pane hints are used when experimental Kitty graphics support is enabled:
 
 ```toml
 [experimental]
 kitty_graphics = true
 ```
 
-Reload or restart Herdr after changing the config.
+If the graphics API is unavailable or disabled, the plugin automatically uses the terminal picker. Enabling `kitty_graphics` cannot add missing socket methods; no server restart or version change is needed for the fallback.
 
 The hint background follows the macOS light or dark appearance. On other platforms, or to override detection, set `HERDR_EASYMOTION_APPEARANCE` to `light` or `dark`.
 

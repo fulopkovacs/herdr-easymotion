@@ -7,10 +7,11 @@ import path from "node:path";
 import { buildTargets, createStatus, parsePluginContext, resolvePaneIdFromContext } from "./core";
 import type { PaneLayout, Status } from "./core";
 import { openPluginPane, paneLayoutAsync } from "./herdr";
-import { clearHints, graphicsDisabledStatus, isGraphicsDisabled, renderHints } from "./picker";
+import { clearHints, renderPickerHints } from "./picker";
 
 interface RenderResult {
   paneIds?: string[];
+  textPicker?: boolean;
   layout?: PaneLayout;
   status?: Status;
 }
@@ -46,6 +47,8 @@ async function main(): Promise<void> {
       plugin_id: pluginId,
       entrypoint: "picker",
       placement: "popup",
+      width: "80%",
+      height: "80%",
       env: paneEnv,
       focus: true,
     },
@@ -71,18 +74,16 @@ async function main(): Promise<void> {
       try {
         return {
           layout,
-          paneIds: await renderHints(targets, { env, sourcePaneId }),
+          ...(await renderPickerHints(targets, { env, sourcePaneId })),
         };
       } catch (error) {
         return {
           layout,
-          status: isGraphicsDisabled(error)
-            ? graphicsDisabledStatus()
-            : {
-                title: "Jump",
-                message: "Pane hints could not be rendered.",
-                detail: error instanceof Error ? error.message : String(error),
-              },
+          status: {
+            title: "Jump",
+            message: "Pane hints could not be rendered.",
+            detail: error instanceof Error ? error.message : String(error),
+          },
         };
       }
     })

@@ -5,7 +5,14 @@ const assert = require("node:assert/strict");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } = require("node:fs");
+const {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+} = require("node:fs");
 const { spawn } = require("node:child_process");
 
 const {
@@ -28,7 +35,12 @@ function runNode(scriptPath, env) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [scriptPath], {
       env,
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
     });
     let stderr = "";
     child.stderr.setEncoding("utf8");
@@ -36,9 +48,75 @@ function runNode(scriptPath, env) {
       stderr += chunk;
     });
     child.on("error", reject);
-    child.on("close", (code) => resolve({ code, stderr }));
+    child.on("close", (code) => resolve({ code, stderr, stdout }));
   });
 }
+
+test("Herdr 0.9.3 fallback survives launcher handoff and selects a pane", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "easymotion-handoff-"));
+  const socketPath = path.join(dir, "api.sock");
+  const fakeHerdrPath = path.join(dir, "herdr.js");
+  const layout = {
+    focused_pane_id: "w1:p1",
+    panes: [
+      { pane_id: "w1:p1", focused: true, rect: { x: 0, y: 0, width: 80, height: 24 } },
+      { pane_id: "w1:p2", rect: { x: 80, y: 0, width: 80, height: 24 } },
+    ],
+  };
+  writeFileSync(
+    fakeHerdrPath,
+    `#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify({ result: { layout } }))});\n`,
+  );
+  chmodSync(fakeHerdrPath, 0o755);
+  const methods = [];
+  let popupEnv;
+  let popupSize;
+  const server = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    socket.once("data", (chunk) => {
+      const payload = JSON.parse(chunk.trim());
+      methods.push(payload.method);
+      if (payload.method === "plugin.pane.open") {
+        popupEnv = payload.params.env;
+        popupSize = [payload.params.width, payload.params.height];
+      }
+      const response = payload.method.startsWith("pane.graphics.")
+        ? { error: { code: "unknown_method", message: `unknown method: ${payload.method}` } }
+        : { result: { type: "ok" } };
+      socket.end(JSON.stringify({ id: payload.id, ...response }) + "\n");
+    });
+  });
+  await listen(server, socketPath);
+  try {
+    const env = {
+      ...process.env,
+      HERDR_BIN_PATH: fakeHerdrPath,
+      HERDR_SOCKET_PATH: socketPath,
+      HERDR_PANE_ID: "w1:p1",
+      HERDR_PLUGIN_CONTEXT_JSON: "{}",
+      HERDR_PLUGIN_STATE_DIR: dir,
+      HERDR_PLUGIN_CACHE_DIR: dir,
+    };
+    const launcher = await runNode(path.join(__dirname, "../dist/open-picker.js"), env);
+    assert.equal(launcher.code, 0, launcher.stderr);
+    assert.deepEqual(popupSize, ["80%", "80%"]);
+    const handoff = JSON.parse(readFileSync(popupEnv.HERDR_JUMP_RENDER_STATUS_PATH, "utf8"));
+    assert.equal(handoff.textPicker, true);
+    assert.equal(handoff.status, undefined);
+    const picker = await runNode(path.join(__dirname, "../dist/picker.js"), {
+      ...env,
+      ...popupEnv,
+    });
+    assert.equal(picker.code, 0, picker.stderr);
+    assert.match(picker.stdout, /1  w1:p1 \(current\)/);
+    assert.match(picker.stdout, /2  w1:p2/);
+    assert.deepEqual(methods, ["plugin.pane.open", "pane.graphics.info", "pane.focus"]);
+    assert.equal(existsSync(popupEnv.HERDR_JUMP_RENDER_STATUS_PATH), false);
+  } finally {
+    await close(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("request sends one newline-delimited pane.focus request", async () => {
   if (process.platform === "win32") {

@@ -8,6 +8,8 @@ exports.copyPaneId = copyPaneId;
 exports.renderHints = renderHints;
 exports.clearHints = clearHints;
 exports.isGraphicsDisabled = isGraphicsDisabled;
+exports.renderPickerHints = renderPickerHints;
+exports.formatTextPicker = formatTextPicker;
 const promises_1 = require("node:fs/promises");
 const core_1 = require("./core");
 const graphics_1 = require("./graphics");
@@ -116,6 +118,28 @@ async function clearHints(paneIds, env = process.env) {
 function isGraphicsDisabled(error) {
     return error instanceof herdr_1.HerdrRequestError && "code" in error && error.code === "feature_disabled";
 }
+async function renderPickerHints(targets, options = {}) {
+    try {
+        return { paneIds: await renderHints(targets, options) };
+    }
+    catch (error) {
+        if (isGraphicsDisabled(error) ||
+            (error instanceof herdr_1.HerdrRequestError && error.code === "unknown_method")) {
+            return { textPicker: true };
+        }
+        throw error;
+    }
+}
+function formatTextPicker(targets) {
+    return [
+        "Jump to pane",
+        "",
+        ...targets.map((target) => `${target.shortcut}  ${target.paneId}${target.focused ? " (current)" : ""}  [${target.rect.x},${target.rect.y}]`),
+        "",
+        "Press a shortcut to jump; Shift+number copies the pane ID.",
+        "Esc or q cancels. Positions are column,row in the tab.",
+    ].join("\r\n");
+}
 function parseJsonArray(value) {
     const parsed = (0, core_1.parsePluginContext)(value);
     return (Array.isArray(parsed) ? parsed : []);
@@ -153,6 +177,7 @@ async function main() {
     const { firstKey, restore } = setupTerminal();
     const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
     let coordinatedLayout;
+    let textPicker = false;
     let hintsCleared = false;
     try {
         let startupStatus = (0, core_1.parsePluginContext)(process.env.HERDR_JUMP_STATUS_JSON);
@@ -162,6 +187,7 @@ async function main() {
             renderedPaneIds.push(...(renderResult.paneIds || []));
             startupStatus = renderResult.status || startupStatus;
             coordinatedLayout = renderResult.layout;
+            textPicker = Boolean(renderResult.textPicker);
         }
         if (startupStatus.message) {
             renderStatus(startupStatus);
@@ -181,22 +207,13 @@ async function main() {
             await waitForDismiss(firstKey);
             return;
         }
-        try {
-            if (renderedPaneIds.length === 0) {
-                renderedPaneIds.push(...(await renderHints(targets, {
-                    env: process.env,
-                    sourcePaneId,
-                })));
-            }
+        if (!textPicker && renderedPaneIds.length === 0) {
+            const result = await renderPickerHints(targets, { env: process.env, sourcePaneId });
+            renderedPaneIds.push(...(result.paneIds || []));
+            textPicker = Boolean(result.textPicker);
         }
-        catch (error) {
-            if (isGraphicsDisabled(error)) {
-                renderStatus(graphicsDisabledStatus());
-                await waitForDismiss(firstKey);
-                return;
-            }
-            throw error;
-        }
+        clearScreen();
+        process.stdout.write(formatTextPicker(targets));
         const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
         const key = firstKey ? await firstKey : targets[0].shortcut;
         const selection = keyToSelection(key);

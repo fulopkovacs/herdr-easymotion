@@ -7,6 +7,7 @@ const { HerdrRequestError } = require("../dist/herdr");
 const {
   copyPaneId,
   graphicsDisabledStatus,
+  formatTextPicker,
   isGraphicsDisabled,
   keyToSelection,
   readKey,
@@ -21,6 +22,17 @@ test("readKey buffers input that arrives before rendering finishes", async () =>
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   assert.equal(await firstKey, "1");
+});
+
+test("terminal picker displays shortcuts, current pane, positions, and controls", () => {
+  const text = formatTextPicker([
+    { shortcut: "1", paneId: "w1:p1", focused: true, rect: { x: 0, y: 0 } },
+    { shortcut: "2", paneId: "w1:p2", focused: false, rect: { x: 80, y: 0 } },
+  ]);
+  assert.match(text, /1  w1:p1 \(current\)  \[0,0\]/);
+  assert.match(text, /2  w1:p2  \[80,0\]/);
+  assert.match(text, /Shift\+number/);
+  assert.match(text, /Esc or q cancels/);
 });
 
 test("keyToSelection handles focus, copy, and cancel keys", () => {

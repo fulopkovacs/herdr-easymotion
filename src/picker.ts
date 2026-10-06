@@ -23,6 +23,7 @@ interface RenderHintsOptions {
 
 interface RenderResult {
   paneIds?: string[];
+  textPicker?: boolean;
   layout?: PaneLayout;
   status?: Status;
 }
@@ -177,6 +178,37 @@ export function isGraphicsDisabled(error: unknown): boolean {
   return error instanceof HerdrRequestError && "code" in error && error.code === "feature_disabled";
 }
 
+export async function renderPickerHints(
+  targets: readonly PaneTarget[],
+  options: RenderHintsOptions = {},
+): Promise<Pick<RenderResult, "paneIds" | "textPicker">> {
+  try {
+    return { paneIds: await renderHints(targets, options) };
+  } catch (error) {
+    if (
+      isGraphicsDisabled(error) ||
+      (error instanceof HerdrRequestError && error.code === "unknown_method")
+    ) {
+      return { textPicker: true };
+    }
+    throw error;
+  }
+}
+
+export function formatTextPicker(targets: readonly PaneTarget[]): string {
+  return [
+    "Jump to pane",
+    "",
+    ...targets.map(
+      (target) =>
+        `${target.shortcut}  ${target.paneId}${target.focused ? " (current)" : ""}  [${target.rect.x},${target.rect.y}]`,
+    ),
+    "",
+    "Press a shortcut to jump; Shift+number copies the pane ID.",
+    "Esc or q cancels. Positions are column,row in the tab.",
+  ].join("\r\n");
+}
+
 function parseJsonArray(value: string | undefined): string[] {
   const parsed = parsePluginContext(value);
   return (Array.isArray(parsed) ? parsed : []) as string[];
@@ -217,6 +249,7 @@ async function main(): Promise<void> {
   const { firstKey, restore } = setupTerminal();
   const renderedPaneIds = parseJsonArray(process.env.HERDR_JUMP_PRE_RENDERED_PANES_JSON);
   let coordinatedLayout: PaneLayout | undefined;
+  let textPicker = false;
   let hintsCleared = false;
 
   try {
@@ -229,6 +262,7 @@ async function main(): Promise<void> {
       renderedPaneIds.push(...(renderResult.paneIds || []));
       startupStatus = renderResult.status || startupStatus;
       coordinatedLayout = renderResult.layout;
+      textPicker = Boolean(renderResult.textPicker);
     }
     if (startupStatus.message) {
       renderStatus(startupStatus as Status);
@@ -256,23 +290,13 @@ async function main(): Promise<void> {
       return;
     }
 
-    try {
-      if (renderedPaneIds.length === 0) {
-        renderedPaneIds.push(
-          ...(await renderHints(targets, {
-            env: process.env,
-            sourcePaneId,
-          })),
-        );
-      }
-    } catch (error) {
-      if (isGraphicsDisabled(error)) {
-        renderStatus(graphicsDisabledStatus());
-        await waitForDismiss(firstKey);
-        return;
-      }
-      throw error;
+    if (!textPicker && renderedPaneIds.length === 0) {
+      const result = await renderPickerHints(targets, { env: process.env, sourcePaneId });
+      renderedPaneIds.push(...(result.paneIds || []));
+      textPicker = Boolean(result.textPicker);
     }
+    clearScreen();
+    process.stdout.write(formatTextPicker(targets));
 
     const shortcutMap = new Map(targets.map((target) => [target.shortcut, target]));
     const key = firstKey ? await firstKey : targets[0].shortcut;

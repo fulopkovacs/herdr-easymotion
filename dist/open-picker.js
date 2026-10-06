@@ -37,6 +37,8 @@ async function main() {
         plugin_id: pluginId,
         entrypoint: "picker",
         placement: "popup",
+        width: "80%",
+        height: "80%",
         env: paneEnv,
         focus: true,
     }, env).then(() => null, (error) => error);
@@ -52,19 +54,17 @@ async function main() {
         try {
             return {
                 layout,
-                paneIds: await (0, picker_1.renderHints)(targets, { env, sourcePaneId }),
+                ...(await (0, picker_1.renderPickerHints)(targets, { env, sourcePaneId })),
             };
         }
         catch (error) {
             return {
                 layout,
-                status: (0, picker_1.isGraphicsDisabled)(error)
-                    ? (0, picker_1.graphicsDisabledStatus)()
-                    : {
-                        title: "Jump",
-                        message: "Pane hints could not be rendered.",
-                        detail: error instanceof Error ? error.message : String(error),
-                    },
+                status: {
+                    title: "Jump",
+                    message: "Pane hints could not be rendered.",
+                    detail: error instanceof Error ? error.message : String(error),
+                },
             };
         }
     })
