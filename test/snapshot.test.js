@@ -68,6 +68,30 @@ test("captured contents and large shortcuts are drawn in the corresponding pane 
   assert.doesNotMatch(output, /Jump to pane|Positions are column,row/);
 });
 
+test("a top-only pane border preserves the first and last captured rows", () => {
+  const topOnly = {
+    area: { x: 0, y: 0, width: 80, height: 32 },
+    panes: [
+      { pane_id: "w1:p1", rect: { x: 0, y: 0, width: 80, height: 16 } },
+      { pane_id: "w1:p2", rect: { x: 0, y: 16, width: 80, height: 16 } },
+    ],
+  };
+  const targets = buildTargets(topOnly, new Map(), "w1:p1", { includeCurrent: true });
+  const text = Array.from({ length: 15 }, (_, i) => String.fromCharCode(65 + i).repeat(77)).join(
+    "\r\n",
+  );
+  const rows = screen(
+    renderSnapshot(topOnly, targets, [{ paneId: "w1:p1", text }], 77, 30, env),
+    77,
+    30,
+  );
+  // The popup's own top border already consumes the pane's top-border row.
+  // Check outside the badge: no top row lost and no default-background strip
+  // inserted between the last content row and the shared divider.
+  for (let y = 0; y < 15; y++) assert.equal(rows[y][0], String.fromCharCode(65 + y));
+  assert.equal(rows[15][0], "─");
+});
+
 test("sidebar and tab-bar offsets do not shift the reconstructed pane positions", () => {
   const shifted = {
     ...layout,

@@ -299,23 +299,9 @@ export async function paneLayoutAsync(
   paneId?: string | null,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<PaneLayout | undefined> {
-  // The socket API avoids spawning the herdr CLI (~20ms) on the picker's critical path.
-  if (paneId && env.HERDR_SOCKET_PATH) {
-    try {
-      const response = await request<{ layout?: PaneLayout }>(
-        "pane.layout",
-        { pane_id: paneId },
-        { env },
-      );
-      const layout = response.result?.layout;
-      if (layout && typeof layout === "object" && Array.isArray(layout.panes)) {
-        return layout;
-      }
-    } catch {
-      // Fall back to the CLI, which also works where the socket method is unavailable.
-    }
-  }
-
+  // The CLI supplies the client geometry context. A bare socket pane.layout
+  // request on Herdr 0.9.3 can return a synthetic 120x40 layout even when the
+  // visible pane buffers and popup have different dimensions.
   return paneLayoutFromResponse(
     await runHerdrJsonAsync<PaneLayoutResponse>(paneLayoutArgs(paneId), { env }),
   );

@@ -347,23 +347,17 @@ test("open-picker reports unavailable jumping through the early popup", async ()
   const socketPath = path.join(dir, "herdr.sock");
   const fakeHerdrPath = path.join(dir, "fake-herdr.js");
   const methods = [];
-  let currentLayout;
   const server = net.createServer((socket) => {
     socket.setEncoding("utf8");
     socket.once("data", (chunk) => {
       const payload = JSON.parse(chunk.trim());
       methods.push(payload.method);
-      const result =
-        payload.method === "pane.layout"
-          ? { type: "pane_layout", layout: currentLayout }
-          : { ok: true };
-      socket.end(JSON.stringify({ id: payload.id, result }) + "\n");
+      socket.end(JSON.stringify({ id: payload.id, result: { ok: true } }) + "\n");
     });
   });
   writeFileSync(
     fakeHerdrPath,
-    // The layout comes from the socket API, so the CLI must not be spawned.
-    `#!/usr/bin/env node\nprocess.stderr.write("herdr CLI should not run");\nprocess.exit(1);\n`,
+    `#!/usr/bin/env node\nconsole.log(JSON.stringify({ result: { layout: JSON.parse(process.env.TEST_LAYOUT_JSON) } }));\n`,
   );
   chmodSync(fakeHerdrPath, 0o755);
 
@@ -387,18 +381,18 @@ test("open-picker reports unavailable jumping through the early popup", async ()
   try {
     for (const layout of layouts) {
       methods.length = 0;
-      currentLayout = layout;
       const result = await runNode(path.join(__dirname, "..", "dist", "open-picker.js"), {
         ...process.env,
         HERDR_BIN_PATH: fakeHerdrPath,
         HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ focused_pane_id: "w1:p1" }),
         HERDR_PLUGIN_STATE_DIR: path.join(dir, "state"),
         HERDR_SOCKET_PATH: socketPath,
+        TEST_LAYOUT_JSON: JSON.stringify(layout),
       });
 
       assert.equal(result.code, 0);
       assert.equal(result.stderr, "");
-      assert.deepEqual(methods.sort(), ["pane.layout", "plugin.pane.open"]);
+      assert.deepEqual(methods, ["plugin.pane.open"]);
     }
   } finally {
     await close(server);
@@ -462,21 +456,23 @@ test("picker focuses the selection and clears hints without a finish process", a
   }
 });
 
-test("pane layout prefers the socket API and falls back to the CLI", async () => {
+test("pane layout uses client geometry rather than the socket's synthetic 120x40 layout", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "herdr-easymotion-"));
   const socketPath = path.join(dir, "herdr.sock");
   const fakeHerdrPath = path.join(dir, "fake-herdr.js");
   const cliMarkerPath = path.join(dir, "cli-ran");
-  const socketLayout = { focused_pane_id: "w1:p1", panes: [{ pane_id: "w1:p1" }] };
-  const cliLayout = { focused_pane_id: "w1:p1", panes: [{ pane_id: "w1:p2" }] };
-  let socketResponse;
+  const socketLayout = {
+    area: { x: 0, y: 0, width: 120, height: 40 },
+    panes: [{ pane_id: "w1:p1" }],
+  };
+  const cliLayout = { area: { x: 0, y: 0, width: 189, height: 53 }, panes: [{ pane_id: "w1:p1" }] };
   const requests = [];
   const server = net.createServer((socket) => {
     socket.setEncoding("utf8");
     socket.once("data", (chunk) => {
       const payload = JSON.parse(chunk.trim());
       requests.push(payload);
-      socket.end(JSON.stringify({ id: payload.id, ...socketResponse }) + "\n");
+      socket.end(JSON.stringify({ id: payload.id, result: { layout: socketLayout } }) + "\n");
     });
   });
   writeFileSync(
@@ -488,14 +484,8 @@ test("pane layout prefers the socket API and falls back to the CLI", async () =>
 
   await listen(server, socketPath);
   try {
-    socketResponse = { result: { type: "pane_layout", layout: socketLayout } };
-    assert.deepEqual(await paneLayoutAsync("w1:p1", env), socketLayout);
-    assert.deepEqual(requests.at(-1).params, { pane_id: "w1:p1" });
-    assert.equal(requests.at(-1).method, "pane.layout");
-    assert.equal(existsSync(cliMarkerPath), false);
-
-    socketResponse = { error: { code: "unknown_method", message: "unknown method" } };
     assert.deepEqual(await paneLayoutAsync("w1:p1", env), cliLayout);
+    assert.deepEqual(requests, []);
     assert.equal(readFileSync(cliMarkerPath, "utf8"), "pane layout --pane w1:p1");
   } finally {
     await close(server);
